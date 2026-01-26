@@ -137,7 +137,7 @@ jobs:
             dist/*
       - name: Publish to GitHub Packages (staging)
         env:
-          TWINE_USERNAME: ${{ github.actor }}
+          TWINE_USERNAME: ${{ github.repository_owner }}
           TWINE_PASSWORD: ${{ secrets.GH_PACKAGES_TOKEN }}
         run: |
           python -m pip install twine
