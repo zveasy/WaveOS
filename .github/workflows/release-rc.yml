@@ -17,8 +17,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Clean build outputs
-        run: rm -rf dist build *.egg-info
       - name: Align package version to tag
         run: |
           python - <<'PY'
@@ -34,6 +32,8 @@ jobs:
           path.write_text(text, encoding="utf-8")
           print(f"Set version to {version}")
           PY
+      - name: Clean build outputs
+        run: rm -rf dist build *.egg-info
       - name: Debug version
         run: |
           python - <<'PY'
@@ -42,6 +42,7 @@ jobs:
             data = tomllib.load(handle)
           print("version:", data["project"]["version"])
           PY
+          grep -n '^version' pyproject.toml || true
           ls -l dist || true
       - name: Install build tooling
         run: |
