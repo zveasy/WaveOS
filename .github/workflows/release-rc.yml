@@ -120,4 +120,4 @@ jobs:
           TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install twine
-          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/waveos-staging dist/*
+          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/waveos-staging dist/*.whl dist/*.tar.gz
