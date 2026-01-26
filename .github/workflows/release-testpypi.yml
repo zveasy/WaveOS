@@ -70,4 +70,4 @@ jobs:
           TWINE_PASSWORD: ${{ env.TEST_PYPI_API_TOKEN }}
         run: |
           python -m pip install --upgrade twine
-          twine upload --repository-url https://test.pypi.org/legacy/ dist/*
+          twine upload --repository-url https://test.pypi.org/legacy/ dist/*.whl dist/*.tar.gz
