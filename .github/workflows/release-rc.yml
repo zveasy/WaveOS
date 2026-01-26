@@ -140,5 +140,14 @@ jobs:
           TWINE_USERNAME: ${{ github.repository_owner }}
           TWINE_PASSWORD: ${{ secrets.GH_PACKAGES_TOKEN }}
         run: |
+          echo "TWINE_USERNAME=${TWINE_USERNAME}"
+          if [ -z "${TWINE_PASSWORD}" ]; then
+            echo "GH_PACKAGES_TOKEN is missing (secrets not injected)."
+          else
+            echo "GH_PACKAGES_TOKEN length: ${#TWINE_PASSWORD}"
+          fi
+          if [ -z "${TWINE_PASSWORD}" ]; then
+            echo "Hint: secrets are not available for forks or missing repo-level secret."
+          fi
           python -m pip install twine
-          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/ dist/*.whl dist/*.tar.gz
+          python -m twine upload --verbose --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/ dist/*.whl dist/*.tar.gz
