@@ -1,0 +1,47 @@
+[
+  {
+    "drivers": [],
+    "entity_id": "link-1",
+    "entity_type": "link",
+    "score": 100.0,
+    "status": "PASS",
+    "window_end": "2026-01-26 16:40:56.267786+00:00",
+    "window_start": "2026-01-26 16:40:56.266662+00:00"
+  },
+  {
+    "drivers": [
+      "errors_spike",
+      "drops_increase"
+    ],
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "score": 50.0,
+    "status": "FAIL",
+    "window_end": "2026-01-26 16:40:56.267786+00:00",
+    "window_start": "2026-01-26 16:40:56.266662+00:00"
+  },
+  {
+    "drivers": [
+      "temperature_drift",
+      "tx_power_dbm_increase"
+    ],
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "score": 45.0,
+    "status": "FAIL",
+    "window_end": "2026-01-26 16:40:56.267786+00:00",
+    "window_start": "2026-01-26 16:40:56.266662+00:00"
+  },
+  {
+    "drivers": [
+      "retries_increase",
+      "congestion_pct_spike"
+    ],
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "score": 50.0,
+    "status": "FAIL",
+    "window_end": "2026-01-26 16:40:56.267786+00:00",
+    "window_start": "2026-01-26 16:40:56.266662+00:00"
+  }
+]

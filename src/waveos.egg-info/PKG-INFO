@@ -1,5 +1,17 @@
+Metadata-Version: 2.4
+Name: waveos
+Version: 0.1.0
+Summary: Wave OS demo CLI
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.7
+Requires-Dist: rich>=13.7
+Requires-Dist: jinja2>=3.1
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+
 Here’s a **clean, founder-grade README** you can drop straight into the repo.
-It explains **what Wave OS is today**, **why it exists**, and **what it becomes**—without overhyping or locking you into claims you haven’t built yet.
+ It explains **what Wave OS is today**, **why it exists**, and **what it becomes**—without overhyping or locking you into claims you haven’t built yet.
  
  ---
  
@@ -104,73 +116,6 @@ It explains **what Wave OS is today**, **why it exists**, and **what it becomes*
  * Explainable decisions
  * Local-first execution
  * Simulation before actuation
- 
- ---
-
- ## How It Works (Current Repo)
-
- Wave OS today is a local-first pipeline that:
-
- 1. Ingests telemetry records (simulated or loaded from files)
- 2. Normalizes them into a vendor-neutral `TelemetrySample` model
- 3. Builds baseline + run statistics over a time window
- 4. Scores drift vs baseline to produce PASS / WARN / FAIL health
- 5. Generates policy recommendations (advisory)
- 6. Emits artifacts (JSON/JSONL) and a human-readable HTML report
-
- ### Data Flow
-
- * **Simulate telemetry**
- 
-   * Implemented in `src/waveos/sim/generator.py` (`build_demo_dataset`)
-   * Writes `telemetry.jsonl` + `links.json` into `baseline/` and `run/` folders
- * **Collect + normalize**
- 
-   * CLI loads records via `waveos.collectors.load_records` and normalizes via `waveos.normalize.normalize_records`
-   * Canonical schema lives in `src/waveos/models/core.py` (`TelemetrySample`)
- * **Build stats**
- 
-   * `src/waveos/scoring/health.py` aggregates metrics per link into baseline/run windows (`build_stats`)
- * **Score health + drivers**
- 
-   * `src/waveos/scoring/health.py` compares baseline vs run (`score_links`)
-   * Produces `HealthScore` objects with a numeric score, status, and driver tags
- * **Policy recommendations (advisory)**
- 
-   * `src/waveos/policy/engine.py` maps health/drivers to recommended actions (`recommend_actions`)
-   * Actions are applied to a `MockActuator` in the CLI (no real hardware control)
- * **Artifacts + report**
- 
-   * `src/waveos/reporting/report.py` writes:
- 
-     * `health_summary.json`
-     * `events.jsonl`
-     * `actions.json`
-     * `report.html`
-
- ---
-
- ## Try It Locally (Demo)
-
- Wave OS ships as a Python CLI (`waveos`) defined in `pyproject.toml`.
-
- ```bash
- python -m pip install -e .
- 
- # 1) Generate simulated baseline + run telemetry
- waveos sim --out demo_data
- 
- # 2) Build baseline stats from baseline telemetry
- waveos baseline --in demo_data/baseline
- 
- # 3) Score a run vs the baseline and write outputs + HTML report
- waveos run --in demo_data/run --baseline demo_data/baseline --out out
- 
- # 4) (Optional) re-render + open the report in your browser
- waveos report --in out --open
- ```
-
- Outputs are written under `out/` (including `report.html`).
  
  ---
  

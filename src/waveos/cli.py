@@ -107,6 +107,7 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 def cmd_run(args: argparse.Namespace) -> int:
     in_dir = Path(args.input)
     out_dir = Path(args.output)
+    out_dir.mkdir(parents=True, exist_ok=True)
     baseline_dir = Path(args.baseline)
     baseline_path = baseline_dir / "baseline.json"
     if not baseline_path.exists():
@@ -140,7 +141,7 @@ def cmd_report(args: argparse.Namespace) -> int:
     report_path = render_report(out_dir, health_payload, events_payload, actions_payload)
     console.print(f"Report written to {report_path}")
     if args.open:
-        webbrowser.open(report_path.as_uri())
+        webbrowser.open(report_path.resolve().as_uri())
     return 0
 
 

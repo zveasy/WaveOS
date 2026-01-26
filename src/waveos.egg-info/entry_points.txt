@@ -1,0 +1,2 @@
+[console_scripts]
+waveos = waveos.cli:main
