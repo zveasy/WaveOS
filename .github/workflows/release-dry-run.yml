@@ -1,12 +1,10 @@
-name: ci
+name: release-dry-run
 
 on:
-  push:
-    branches: ["main"]
-  pull_request:
+  workflow_dispatch:
 
 jobs:
-  test:
+  build-sign:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -16,34 +14,29 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install deps
+      - name: Install build tooling
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -e .[dev]
           python -m pip install build
-          python -m pip install pip-audit
-      - name: OTEL import smoke test
-        run: |
-          python - <<'PY'
-          from opentelemetry import trace
-          from opentelemetry.sdk.trace import TracerProvider
-          trace.set_tracer_provider(TracerProvider())
-          print("OTEL tracing initialized")
-          PY
-      - name: Lint (placeholder)
-        run: |
-          python -c "print('lint placeholder')"
-      - name: Tests
-        run: pytest -q
-      - name: Dependency audit
-        run: pip-audit --skip-editable
-      - name: Build package
+      - name: Build dist
         run: python -m build
       - name: Install syft
         uses: anchore/sbom-action/download-syft@v0
       - name: Generate SBOM
         run: |
           syft dist/*.whl -o spdx-json=dist/sbom.spdx.json
+      - name: Create checksums
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+          dist = Path("dist")
+          lines = []
+          for artifact in sorted(dist.glob("*")):
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            lines.append(f"{digest}  {artifact.name}")
+          Path("dist/SHA256SUMS").write_text("\n".join(lines) + "\n")
+          PY
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.7.0
       - name: Sign artifacts (keyless OIDC)
@@ -60,3 +53,8 @@ jobs:
             --output-signature "dist/sbom.spdx.json.sig" \
             --output-certificate "dist/sbom.spdx.json.crt" \
             "dist/sbom.spdx.json"
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveos-release-dry-run
+          path: dist/*

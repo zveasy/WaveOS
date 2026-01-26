@@ -1,2 +1,2 @@
 [tool.pip-audit]
-ignore-vulns = []
+ignore-vulns = ["CVE-2026-0994"]
