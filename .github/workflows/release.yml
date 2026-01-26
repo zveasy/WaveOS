@@ -20,6 +20,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Clean build outputs
+        run: rm -rf dist build *.egg-info
       - name: Align package version to tag
         run: |
           python - <<'PY'
@@ -133,8 +135,8 @@ jobs:
       - name: Publish to GitHub Packages
         if: ${{ env.PUBLISH_ENABLED == 'true' }}
         env:
-          TWINE_USERNAME: __token__
+          TWINE_USERNAME: ${{ github.actor }}
           TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install twine
-          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }} dist/*
+          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/ dist/*.whl dist/*.tar.gz

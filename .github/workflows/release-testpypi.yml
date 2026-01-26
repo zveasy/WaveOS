@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Clean build outputs
+        run: rm -rf dist build *.egg-info
       - name: Align package version to tag
         run: |
           python - <<'PY'

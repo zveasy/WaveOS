@@ -17,6 +17,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+      - name: Clean build outputs
+        run: rm -rf dist build *.egg-info
       - name: Align package version to tag
         run: |
           python - <<'PY'
@@ -135,7 +137,7 @@ jobs:
             dist/*
       - name: Publish to GitHub Packages (staging)
         env:
-          TWINE_USERNAME: __token__
+          TWINE_USERNAME: ${{ github.actor }}
           TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install twine
