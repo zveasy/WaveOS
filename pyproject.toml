@@ -23,7 +23,7 @@ dev = [
   "pytest>=7.4",
   "opentelemetry-api>=1.25",
   "opentelemetry-sdk>=1.25",
-  "opentelemetry-exporter-otlp>=1.25"
+  
 ]
 secrets = [
   "hvac>=2.0",
@@ -32,6 +32,10 @@ secrets = [
 ]
 alerts = [
   "boto3>=1.34"
+]
+
+otel = [
+  "opentelemetry-exporter-otlp>=1.25"
 ]
 
 [tool.setuptools]

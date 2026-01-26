@@ -124,6 +124,9 @@ jobs:
           python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }} dist/*
       - name: Publish to PyPI
         if: ${{ env.PYPI_API_TOKEN != '' && env.PUBLISH_ENABLED == 'true' }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ env.PYPI_API_TOKEN }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ env.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install --upgrade twine
+          twine upload dist/*

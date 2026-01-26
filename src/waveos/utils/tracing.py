@@ -5,7 +5,6 @@ from contextlib import contextmanager
 from typing import Iterator, Optional
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -21,6 +20,13 @@ def init_tracer(service_name: str = "waveos", endpoint: Optional[str] = None) ->
     resource = Resource.create({"service.name": service_name})
     provider = TracerProvider(resource=resource)
     if endpoint:
+        try:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "OTLP tracing is enabled (WAVEOS_OTEL_ENDPOINT is set) but the OTLP exporter is not installed. "
+                "Install the tracing extra: pip install -e '.[otel]'"
+            ) from exc
         exporter = OTLPSpanExporter(endpoint=endpoint)
         provider.add_span_processor(BatchSpanProcessor(exporter))
     trace.set_tracer_provider(provider)
