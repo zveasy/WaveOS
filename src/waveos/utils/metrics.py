@@ -18,11 +18,11 @@ def init_registry() -> CollectorRegistry:
     return _registry
 
 
-def start_metrics_server() -> None:
+def start_metrics_server(port: int | None = None) -> None:
     global _started
     if _started:
         return
-    port = os.getenv("WAVEOS_METRICS_PORT")
+    port = port or (int(os.getenv("WAVEOS_METRICS_PORT")) if os.getenv("WAVEOS_METRICS_PORT") else None)
     if not port:
         return
     registry = init_registry()

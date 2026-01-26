@@ -6,7 +6,7 @@ from typing import Any, Dict, Iterable, List
 from pydantic import ValidationError
 
 from waveos.models import TelemetrySample
-from waveos.utils import counters, get_logger, histograms, parse_timestamp, utc_now
+from waveos.utils import counters, get_logger, histograms, parse_timestamp, span, utc_now
 
 logger = get_logger("waveos.normalize")
 
@@ -31,12 +31,16 @@ def normalize_record(record: Dict[str, Any]) -> TelemetrySample:
         raise
 
 
-def normalize_records(records: Iterable[Dict[str, Any]]) -> List[TelemetrySample]:
+def normalize_records(records: Iterable[Dict[str, Any]], run_id: str | None = None) -> List[TelemetrySample]:
     normalized: List[TelemetrySample] = []
+    records_list = list(records)
     metrics_counters = counters()
     duration = histograms()["normalize_duration"]
-    with duration.time():
-        for record in records:
+    with duration.time(), span("normalize_records") as active_span:
+        if run_id:
+            active_span.set_attribute("waveos.run_id", run_id)
+        active_span.set_attribute("waveos.sample_count", len(records_list))
+        for record in records_list:
             try:
                 normalized.append(normalize_record(record))
                 metrics_counters["telemetry_ingested"].inc()

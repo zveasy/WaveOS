@@ -37,5 +37,6 @@ def test_write_outputs_creates_reports(tmp_path: Path) -> None:
     assert (tmp_path / "health_summary.json").exists()
     assert (tmp_path / "events.jsonl").exists()
     assert (tmp_path / "actions.json").exists()
+    assert (tmp_path / "explainability.json").exists()
     assert read_json(tmp_path / "health_summary.json")[0]["entity_id"] == "link-1"
     assert read_jsonl(tmp_path / "events.jsonl")[0]["level"] == "INFO"

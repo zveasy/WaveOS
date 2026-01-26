@@ -14,3 +14,12 @@ Use `docker-compose.yml` for a local container runtime. Mounts the repo and runs
 - `WAVEOS_LOG_FORMAT=json|text` (default: json)
 - `WAVEOS_LOG_LEVEL=INFO|DEBUG|...`
 - `WAVEOS_METRICS_PORT=9109` to enable Prometheus metrics endpoint
+- `WAVEOS_OTEL_ENDPOINT=http://localhost:4318/v1/traces` to enable tracing
+- `WAVEOS_CONFIG=path/to/config.toml` to load config file
+- `WAVEOS_ALERT_WEBHOOK_URL=https://example.com/webhook` for WARN/ERROR alerts
+- `WAVEOS_ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...`
+- `WAVEOS_ALERT_EMAIL_TO=ops@example.com`
+
+## Secrets
+Wave OS currently reads secrets from environment variables only.
+Planned integrations: Vault, AWS Secrets Manager, GCP Secret Manager.

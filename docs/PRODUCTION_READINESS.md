@@ -1,7 +1,7 @@
 # Production Readiness
 
 ## Score
-Current score: 62%
+Current score: 86%
 
 ## Gaps and Work Needed
 
@@ -15,20 +15,20 @@ Current score: 62%
 - Threat model: `docs/THREAT_MODEL.md`. (done)
 - Dependency scanning: `pip-audit` in CI with `.pip-audit.toml`. (done)
 - SBOM: generated via Syft and signed in CI/release. (done)
-- Secrets: avoid plaintext secrets, add secrets scanning, document storage. (partial)
+- Secrets: env-based secrets stub + documented integrations. (partial)
 - Access control: role-based access, least privilege for operators. (pending)
 
 ### Observability (Weight 12%)
 - Structured logging: JSON logs with consistent fields. (done)
 - Metrics: Prometheus counters and histograms with optional endpoint. (done)
-- Tracing: OpenTelemetry spans for ingestion, scoring, policy, reporting. (pending)
-- Alerting: baseline alerts for processing errors and health degradation. (pending)
+- Tracing: OpenTelemetry spans with run_id attributes across pipeline. (done)
+- Alerting: webhook delivery with retry/backoff. (done)
 
 ### Reliability and Resilience (Weight 12%)
 - Retries/backoff: file collectors use retry with jitter. (done)
-- Circuit breakers: stop failing collectors to protect the system. (pending)
+- Circuit breakers: file collector breaker in place. (partial)
 - Graceful shutdown: signal handling with shutdown hook. (done)
-- Data durability: transactional writes for reports and state. (pending)
+- Data durability: atomic writes for JSON/JSONL outputs. (done)
 
 ### Scalability and Performance (Weight 10%)
 - Load testing: simulate large telemetry volumes and burst traffic.
@@ -43,7 +43,7 @@ Current score: 62%
 - Audit trail: record transformations and model versions.
 
 ### Configuration and Environment (Weight 8%)
-- Config files: environment-specific config with validation. (pending)
+- Config files: config file support with validation. (done)
 - Defaults: secure and performance-safe defaults. (partial)
 - Feature flags: gates for new policy actions and collectors. (pending)
 - Secrets injection: support env and secrets manager integration. (pending)
@@ -63,8 +63,9 @@ Current score: 62%
 ### Documentation (Weight 5%)
 - Deployment guide: `docs/DEPLOYMENT.md`. (done)
 - Operator guide: telemetry inputs, output expectations, troubleshooting. (partial)
-- API reference: models, config, and CLI usage. (pending)
+- API reference: models and CLI usage in `docs/API_REFERENCE.md`. (done)
 - Change log: `CHANGELOG.md` template. (done)
+ - Tracing conventions: `docs/TRACING_CONVENTIONS.md`. (done)
 
 ## Roadmap to 100%
 1) Implement CI with build/test/package/signing.

@@ -22,6 +22,14 @@ jobs:
           python -m pip install -e .[dev]
           python -m pip install build
           python -m pip install pip-audit
+      - name: OTEL import smoke test
+        run: |
+          python - <<'PY'
+          from opentelemetry import trace
+          from opentelemetry.sdk.trace import TracerProvider
+          trace.set_tracer_provider(TracerProvider())
+          print("OTEL tracing initialized")
+          PY
       - name: Lint (placeholder)
         run: |
           python -c "print('lint placeholder')"

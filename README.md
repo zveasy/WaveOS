@@ -143,10 +143,11 @@ It explains **what Wave OS is today**, **why it exists**, and **what it becomes*
  
    * `src/waveos/reporting/report.py` writes:
  
-     * `health_summary.json`
-     * `events.jsonl`
-     * `actions.json`
-     * `report.html`
+ * `health_summary.json`
+ * `events.jsonl`
+ * `actions.json`
+ * `report.html`
+ * `explainability.json`
 
  ---
 
@@ -154,11 +155,14 @@ It explains **what Wave OS is today**, **why it exists**, and **what it becomes*
 
  Wave OS ships as a Python CLI (`waveos`) defined in `pyproject.toml`.
 
- ```bash
- python -m pip install -e .
- 
- # 1) Generate simulated baseline + run telemetry
- waveos sim --out demo_data
+```bash
+python -m pip install -e .
+
+# Optional: install dev extras for tracing support
+python -m pip install -e .[dev]
+
+# 1) Generate simulated baseline + run telemetry
+waveos sim --out demo_data
  
  # 2) Build baseline stats from baseline telemetry
  waveos baseline --in demo_data/baseline
@@ -181,6 +185,11 @@ Wave OS supports a small set of runtime environment variables:
 * `WAVEOS_LOG_FORMAT=json|text` (default: `json`)
 * `WAVEOS_LOG_LEVEL=INFO|DEBUG|...`
 * `WAVEOS_METRICS_PORT=9109` to enable the Prometheus metrics endpoint
+* `WAVEOS_OTEL_ENDPOINT=http://localhost:4318/v1/traces` to enable tracing
+* `WAVEOS_CONFIG=path/to/config.toml` to load config file
+* `WAVEOS_ALERT_WEBHOOK_URL=https://example.com/webhook` for WARN/ERROR alerts
+* `WAVEOS_ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...`
+* `WAVEOS_ALERT_EMAIL_TO=ops@example.com`
 
 ---
 

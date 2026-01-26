@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 import webbrowser
 from pathlib import Path
 from typing import Dict, Iterable, List
+from uuid import uuid4
 
 from rich.console import Console
 from rich.table import Table
@@ -24,12 +26,18 @@ from waveos.utils import (
     install_signal_handlers,
     read_json,
     read_jsonl,
+    load_config,
     setup_logging,
     should_shutdown,
     start_metrics_server,
     write_json,
     write_jsonl,
+    init_tracer,
+    send_webhook,
+    AlertRoute,
+    route_alerts,
 )
+from pydantic import ValidationError
 
 console = Console()
 logger = get_logger("waveos.cli")
@@ -42,13 +50,13 @@ def _find_telemetry_files(in_dir: Path) -> List[Path]:
     return candidates
 
 
-def _load_samples(in_dir: Path):
+def _load_samples(in_dir: Path, run_id: str | None = None):
     samples = []
     for path in _find_telemetry_files(in_dir):
         if should_shutdown():
             return samples
         records = load_records(path)
-        samples.extend(normalize_records(records))
+        samples.extend(normalize_records(records, run_id=run_id))
     return samples
 
 
@@ -62,7 +70,7 @@ def _run_map(records: Iterable[dict]) -> Dict[str, RunStats]:
     return {entry.entity_id: entry for entry in stats}
 
 
-def _build_events(scores: Iterable[HealthScore]) -> List[Event]:
+def _build_events(scores: Iterable[HealthScore], run_id: str | None = None) -> List[Event]:
     events: List[Event] = []
     for score in scores:
         if score.status == HealthStatus.PASS:
@@ -75,7 +83,7 @@ def _build_events(scores: Iterable[HealthScore]) -> List[Event]:
                 message=f"{score.entity_type} {score.entity_id} {score.status} drivers={','.join(score.drivers)}",
                 entity_type=score.entity_type,
                 entity_id=score.entity_id,
-                details={"drivers": score.drivers, "score": score.score},
+                details={"drivers": score.drivers, "score": score.score, "run_id": run_id},
             )
         )
     return events
@@ -120,25 +128,32 @@ def cmd_run(args: argparse.Namespace) -> int:
     in_dir = Path(args.input)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
+    run_id = f"run-{uuid4().hex[:8]}"
     baseline_dir = Path(args.baseline)
     baseline_path = baseline_dir / "baseline.json"
     if not baseline_path.exists():
         console.print(f"Missing baseline.json in {baseline_dir}")
         return 1
-    samples = _load_samples(in_dir)
+    samples = _load_samples(in_dir, run_id=run_id)
     _, run_stats = build_stats(samples)
     baseline_records = read_json(baseline_path)
     baseline_map = _baseline_map(baseline_records)
     run_map = {stat.entity_id: stat for stat in run_stats}
-    scores = score_links(baseline_map, run_map)
-    actions = recommend_actions(scores)
-    events = _build_events(scores)
+    scores = score_links(baseline_map, run_map, run_id=run_id)
+    actions = recommend_actions(scores, run_id=run_id)
+    events = _build_events(scores, run_id=run_id)
     MockActuator().apply(actions)
+    _send_alerts_if_configured(args, run_id, events)
 
     write_json(out_dir / "run_stats.json", [stat.model_dump() for stat in run_stats])
-    report_path = write_outputs(out_dir, scores, events, actions)
+    config = getattr(args, "config_obj", None)
+    explainability_enabled = True
+    if config:
+        explainability_enabled = config.feature_flags.get("explainability", True)
+    report_path = write_outputs(out_dir, scores, events, actions, run_id=run_id, explainability=explainability_enabled)
     _render_console_summary(scores)
     console.print(f"Report written to {report_path}")
+    console.print(f"Run ID: {run_id}")
     return 0
 
 
@@ -157,8 +172,31 @@ def cmd_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _send_alerts_if_configured(args: argparse.Namespace, run_id: str, events: List[Event]) -> None:
+    config = getattr(args, "config_obj", None)
+    if not config:
+        return
+    alert_events = [e.model_dump() for e in events if e.level in {EventLevel.WARN, EventLevel.ERROR}]
+    if not alert_events:
+        return
+    routes: List[AlertRoute] = []
+    if config.alert_webhook_url:
+        routes.append(AlertRoute(name="webhook", destination="webhook", url=config.alert_webhook_url))
+    if config.alert_slack_webhook_url:
+        routes.append(AlertRoute(name="slack", destination="slack", url=config.alert_slack_webhook_url))
+    if config.alert_email_to:
+        routes.append(AlertRoute(name="email", destination="email"))
+    if not routes:
+        return
+    try:
+        route_alerts(alert_events, routes, run_id=run_id)
+    except Exception as exc:
+        logger.warning("Alert routing failed: %s", exc)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="waveos", description="Wave OS demo CLI")
+    parser.add_argument("--config", help="Path to config file (toml/json)")
     sub = parser.add_subparsers(dest="command")
 
     sim_parser = sub.add_parser("sim", help="Generate simulated telemetry")
@@ -184,11 +222,19 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    setup_logging()
-    start_metrics_server()
-    install_signal_handlers(lambda: logger.warning("Graceful shutdown requested"))
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        config = load_config(Path(args.config) if args.config else None)
+    except (ValidationError, ValueError) as exc:
+        console.print(f"Invalid configuration: {exc}")
+        raise SystemExit(2)
+    args.config_obj = config
+    level = getattr(logging, config.log_level.upper(), logging.INFO)
+    setup_logging(level=level, log_format=config.log_format)
+    start_metrics_server(config.metrics_port)
+    init_tracer(endpoint=config.otel_endpoint)
+    install_signal_handlers(lambda: logger.warning("Graceful shutdown requested"))
     if not getattr(args, "func", None):
         parser.print_help()
         raise SystemExit(1)

@@ -1,0 +1,47 @@
+{
+  "title": "Wave OS Metrics",
+  "schemaVersion": 38,
+  "version": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Telemetry Ingested",
+      "targets": [
+        {
+          "expr": "waveos_telemetry_ingested_total"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 0, "w": 12, "h": 6}
+    },
+    {
+      "type": "stat",
+      "title": "Normalize Errors",
+      "targets": [
+        {
+          "expr": "waveos_normalize_errors_total"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 0, "w": 12, "h": 6}
+    },
+    {
+      "type": "timeseries",
+      "title": "Normalize Duration (p95)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(waveos_normalize_duration_seconds_bucket[5m])) by (le))"
+        }
+      ],
+      "gridPos": {"x": 0, "y": 6, "w": 12, "h": 8}
+    },
+    {
+      "type": "timeseries",
+      "title": "Scoring Duration (p95)",
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum(rate(waveos_scoring_duration_seconds_bucket[5m])) by (le))"
+        }
+      ],
+      "gridPos": {"x": 12, "y": 6, "w": 12, "h": 8}
+    }
+  ]
+}

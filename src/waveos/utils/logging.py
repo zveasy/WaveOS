@@ -15,8 +15,8 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload)
 
 
-def setup_logging(level: int = logging.INFO) -> None:
-    log_format = os.getenv("WAVEOS_LOG_FORMAT", "json").lower()
+def setup_logging(level: int = logging.INFO, log_format: str | None = None) -> None:
+    log_format = (log_format or os.getenv("WAVEOS_LOG_FORMAT", "json")).lower()
     handler = logging.StreamHandler()
     if log_format == "json":
         handler.setFormatter(JsonFormatter())

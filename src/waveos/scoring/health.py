@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Tuple
 
 from waveos.models import BaselineStats, HealthScore, HealthStatus, RunStats, TelemetrySample
-from waveos.utils import get_logger, histograms
+from waveos.utils import get_logger, histograms, span
 
 logger = get_logger("waveos.scoring")
 
@@ -54,10 +54,17 @@ def build_stats(samples: List[TelemetrySample]) -> Tuple[List[BaselineStats], Li
     return baseline, run
 
 
-def score_links(baseline: Dict[str, BaselineStats], run: Dict[str, RunStats]) -> List[HealthScore]:
+def score_links(
+    baseline: Dict[str, BaselineStats],
+    run: Dict[str, RunStats],
+    run_id: str | None = None,
+) -> List[HealthScore]:
     scores: List[HealthScore] = []
     duration = histograms()["scoring_duration"]
-    with duration.time():
+    with duration.time(), span("score_links") as active_span:
+        if run_id:
+            active_span.set_attribute("waveos.run_id", run_id)
+        active_span.set_attribute("waveos.entity_count", len(run))
         for link_id, run_stats in run.items():
             base_stats = baseline.get(link_id)
             if not base_stats:

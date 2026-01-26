@@ -3,6 +3,13 @@ from waveos.utils.logging import get_logger, setup_logging
 from waveos.utils.metrics import counters, histograms, start_metrics_server
 from waveos.utils.retry import retry
 from waveos.utils.shutdown import install_signal_handlers, should_shutdown, trigger_shutdown
+from waveos.utils.circuit_breaker import CircuitBreaker
+from waveos.utils.config import WaveOSConfig, load_config
+from waveos.utils.tracing import init_tracer, span
+from waveos.utils.alerts import send_webhook
+from waveos.utils.alerting import AlertRoute, route_alerts
+from waveos.utils.secrets import get_secret
+from waveos.utils.rbac import Principal, Role, Permission, authorize
 from waveos.utils.time import parse_timestamp, utc_now
 
 __all__ = [
@@ -13,6 +20,19 @@ __all__ = [
     "install_signal_handlers",
     "should_shutdown",
     "trigger_shutdown",
+    "CircuitBreaker",
+    "WaveOSConfig",
+    "load_config",
+    "init_tracer",
+    "span",
+    "send_webhook",
+    "AlertRoute",
+    "route_alerts",
+    "get_secret",
+    "Principal",
+    "Role",
+    "Permission",
+    "authorize",
     "parse_timestamp",
     "read_csv",
     "read_json",
