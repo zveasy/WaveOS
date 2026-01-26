@@ -1,18 +1,16 @@
-name: release
+name: release-rc
 
 on:
   push:
     tags:
-      - "v*"
+      - "v*-rc*"
 
 jobs:
-  build-and-publish:
+  build-and-publish-rc:
     runs-on: ubuntu-latest
     permissions:
       contents: write
       id-token: write
-    env:
-      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,7 +32,6 @@ jobs:
           python - <<'PY'
           import hashlib
           from pathlib import Path
-
           dist = Path("dist")
           lines = []
           for artifact in sorted(dist.glob("*")):
@@ -71,23 +68,15 @@ jobs:
               tag_name,
               target_commitish: context.sha,
             });
-            require("fs").writeFileSync("release-notes.md", result.data.body + "\n");
+            require("fs").writeFileSync("release-notes-rc.md", result.data.body + "\n");
       - name: Append audit sections
         run: |
           {
             echo
-            echo "### Artifacts"
-            ls -1 dist | sed 's/^/- /'
-            echo
-            echo "### Checksums"
-            echo '```'
-            cat dist/SHA256SUMS
-            echo '```'
-            echo
             echo "### 🔐 Verify Release Artifacts"
             echo '```'
             echo "cosign verify \\"
-            echo "  --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}\" \\"
+            echo "  --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-rc.yml@refs/tags/${GITHUB_REF_NAME}\" \\"
             echo "  --certificate-oidc-issuer \"https://token.actions.githubusercontent.com\" \\"
             echo "  <artifact>"
             echo '```'
@@ -98,31 +87,37 @@ jobs:
             echo
             echo '```'
             echo "cosign verify-blob \\"
-            echo "  --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}\" \\"
+            echo "  --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release-rc.yml@refs/tags/${GITHUB_REF_NAME}\" \\"
             echo "  --certificate-oidc-issuer \"https://token.actions.githubusercontent.com\" \\"
             echo "  --signature sbom.spdx.json.sig \\"
             echo "  sbom.spdx.json"
             echo '```'
             echo
+            echo "### Staging Config"
+            echo "- Use docs/config/staging.toml"
+            echo
+            echo "### Artifacts"
+            ls -1 dist | sed 's/^/- /'
+            echo
+            echo "### Checksums"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
             echo "### SBOM"
             echo "- dist/sbom.spdx.json"
-          } >> release-notes.md
-      - name: Create GitHub Release
+          } >> release-notes-rc.md
+      - name: Create GitHub Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
-          body_path: release-notes.md
+          body_path: release-notes-rc.md
+          prerelease: true
           files: |
             dist/*
-      - name: Publish to GitHub Packages
-        if: ${{ !contains(github.ref_name, '-rc') }}
+      - name: Publish to GitHub Packages (staging)
         env:
           TWINE_USERNAME: __token__
           TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install twine
-          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }} dist/*
-      - name: Publish to PyPI
-        if: ${{ env.PYPI_API_TOKEN != '' && !contains(github.ref_name, '-rc') }}
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ env.PYPI_API_TOKEN }}
+          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/waveos-staging dist/*

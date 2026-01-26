@@ -1,7 +1,7 @@
 # Production Readiness
 
 ## Score
-Current score: 98%
+Current score: 99%
 
 ## Release Gate Checklist (Minimum for Production)
 - Security review sign-off (threat model + SCA + SBOM + signing verified)
@@ -27,6 +27,7 @@ Current score: 98%
 - SBOM: generated via Syft and signed in CI/release. (done)
 - Secrets: env-based + provider adapters (Vault/AWS/GCP) with tests. (partial)
 - Access control: RBAC with token-based auth and CLI enforcement. (done)
+- Audit logging: auth decisions logged to JSONL. (done)
 - Audit logging: log auth decisions and access attempts. (pending)
 - Secrets rotation: documented rotation procedure. (pending)
 - Data classification: document sensitivity of telemetry and outputs. (pending)
@@ -35,7 +36,7 @@ Current score: 98%
 - Structured logging: JSON logs with consistent fields. (done)
 - Metrics: Prometheus counters and histograms with optional endpoint. (done)
 - Tracing: OpenTelemetry spans with run_id attributes across pipeline. (done)
-- Alerting: webhook + Slack integration; email stub. (partial)
+- Alerting: webhook + Slack + SMTP/SES email delivery. (done)
 - Dashboard validation: verify Grafana dashboard with real runs. (pending)
 - Alert tuning: thresholds and routing rules for WARN/ERROR. (pending)
 
@@ -65,6 +66,7 @@ Current score: 98%
 - Defaults: secure and performance-safe defaults. (partial)
 - Feature flags: config-driven flags with policy action gating. (done)
 - Secrets injection: provider selection wired; full integration pending. (partial)
+- Config profiles: staging/prod configs in `docs/config/`. (done)
 - Config schema versioning: schema_version enforced. (done)
 - Config drift detection: detect config changes between runs. (pending)
 
@@ -75,6 +77,7 @@ Current score: 98%
 - Capacity planning: forecast and scale guidance. (pending)
 - Backup/retention: retention policy for reports/events. (pending)
 - Change management: release approvals and rollbacks. (pending)
+- Rollout checklist: `docs/ROLLOUT_CHECKLIST.md`. (done)
 
 ### Testing (Weight 10%)
 - Integration tests: full pipeline with persisted outputs.

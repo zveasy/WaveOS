@@ -42,6 +42,10 @@ from waveos.utils import (
     TokenAuth,
     load_token_roles_from_env,
     load_token_roles_from_config,
+    append_audit,
+    utc_now,
+    get_secret,
+    config_fingerprint,
 )
 from pydantic import ValidationError
 
@@ -129,6 +133,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
     payload = [stat.model_dump() for stat in baseline_stats]
     write_json(in_dir / "baseline.json", payload)
     write_jsonl(in_dir / "normalized.jsonl", [s.model_dump() for s in samples])
+    config = getattr(args, "config_obj", None)
+    if config:
+        write_json(in_dir / "config_fingerprint.json", {"fingerprint": config_fingerprint(config)})
     console.print(f"Wrote baseline stats to {in_dir / 'baseline.json'}")
     return 0
 
@@ -143,6 +150,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     run_id = f"run-{uuid4().hex[:8]}"
     baseline_dir = Path(args.baseline)
     baseline_path = baseline_dir / "baseline.json"
+    config = getattr(args, "config_obj", None)
+    if config:
+        run_fp = config_fingerprint(config)
+        fp_path = baseline_dir / "config_fingerprint.json"
+        if fp_path.exists():
+            baseline_fp = read_json(fp_path).get("fingerprint")
+            if baseline_fp and baseline_fp != run_fp:
+                logger.warning("Config drift detected between baseline and run.")
     if not baseline_path.exists():
         console.print(f"Missing baseline.json in {baseline_dir}")
         return 1
@@ -152,7 +167,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     baseline_map = _baseline_map(baseline_records)
     run_map = {stat.entity_id: stat for stat in run_stats}
     scores = score_links(baseline_map, run_map, run_id=run_id)
-    config = getattr(args, "config_obj", None)
     feature_flags = config.feature_flags if config else {}
     actions = recommend_actions(scores, run_id=run_id, feature_flags=feature_flags)
     events = _build_events(scores, run_id=run_id)
@@ -202,7 +216,26 @@ def _send_alerts_if_configured(args: argparse.Namespace, run_id: str, events: Li
     if config.alert_slack_webhook_url:
         routes.append(AlertRoute(name="slack", destination="slack", url=config.alert_slack_webhook_url))
     if config.alert_email_to:
-        routes.append(AlertRoute(name="email", destination="email", url=config.alert_email_to))
+        smtp_password = None
+        if config.alert_email_smtp_password_secret:
+            smtp_password = get_secret(config.alert_email_smtp_password_secret, provider=config.secrets_provider)
+        routes.append(
+            AlertRoute(
+                name="email",
+                destination="email",
+                url=config.alert_email_to,
+                metadata={
+                    "provider": config.alert_email_provider,
+                    "smtp_host": config.alert_email_smtp_host,
+                    "smtp_port": config.alert_email_smtp_port,
+                    "smtp_user": config.alert_email_smtp_user,
+                    "smtp_password": smtp_password,
+                    "smtp_from": config.alert_email_from,
+                    "ses_region": config.alert_email_ses_region,
+                    "ses_from": config.alert_email_from,
+                },
+            )
+        )
     if not routes:
         return
     try:
@@ -233,6 +266,20 @@ def _authorize(args: argparse.Namespace, permission: Permission) -> bool:
         permission.value,
         allowed,
     )
+    config = getattr(args, "config_obj", None)
+    if config and config.audit_enabled and config.audit_log_path:
+        append_audit(
+            Path(config.audit_log_path),
+            {
+                "timestamp": utc_now().isoformat(),
+                "principal": principal.name,
+                "role": principal.role.value,
+                "permission": permission.value,
+                "allowed": allowed,
+            },
+            max_bytes=config.audit_max_bytes,
+            max_files=config.audit_max_files,
+        )
     return allowed
 
 

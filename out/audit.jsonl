@@ -1,0 +1,9 @@
+{"timestamp": "2026-01-26T18:27:30.201830+00:00", "principal": "local-user", "role": "operator", "permission": "run_pipeline", "allowed": true}
+{"timestamp": "2026-01-26T18:27:30.559195+00:00", "principal": "local-user", "role": "operator", "permission": "run_pipeline", "allowed": true}
+{"timestamp": "2026-01-26T18:27:30.935002+00:00", "principal": "local-user", "role": "operator", "permission": "view_reports", "allowed": true}
+{"timestamp": "2026-01-26T18:31:47.590227+00:00", "principal": "local-user", "role": "operator", "permission": "run_pipeline", "allowed": true}
+{"timestamp": "2026-01-26T18:31:47.999404+00:00", "principal": "local-user", "role": "operator", "permission": "run_pipeline", "allowed": true}
+{"timestamp": "2026-01-26T18:31:48.338842+00:00", "principal": "local-user", "role": "operator", "permission": "view_reports", "allowed": true}
+{"timestamp": "2026-01-26T18:59:09.164856+00:00", "principal": "local-user", "role": "operator", "permission": "run_pipeline", "allowed": true}
+{"timestamp": "2026-01-26T18:59:09.519697+00:00", "principal": "local-user", "role": "operator", "permission": "run_pipeline", "allowed": true}
+{"timestamp": "2026-01-26T18:59:09.871836+00:00", "principal": "local-user", "role": "operator", "permission": "view_reports", "allowed": true}

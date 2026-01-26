@@ -190,7 +190,45 @@ Wave OS supports a small set of runtime environment variables:
 * `WAVEOS_ALERT_WEBHOOK_URL=https://example.com/webhook` for WARN/ERROR alerts
 * `WAVEOS_ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...`
 * `WAVEOS_ALERT_EMAIL_TO=ops@example.com`
+* `WAVEOS_ALERT_EMAIL_FROM=waveos@example.com`
+* `WAVEOS_ALERT_EMAIL_PROVIDER=smtp|ses`
+* `WAVEOS_ALERT_EMAIL_SMTP_HOST=smtp.example.com`
+* `WAVEOS_ALERT_EMAIL_SMTP_PORT=587`
+* `WAVEOS_ALERT_EMAIL_SMTP_USER=smtp-user`
+* `WAVEOS_ALERT_EMAIL_SMTP_PASSWORD_SECRET=SMTP_PASSWORD`
+* `WAVEOS_ALERT_EMAIL_SES_REGION=us-east-1`
 * `WAVEOS_AUTH_TOKENS=token1=admin,token2=operator` for RBAC
+* `WAVEOS_SECRETS_PROVIDER=env|vault|aws|gcp`
+* `WAVEOS_AUDIT_LOG_PATH=out/audit.jsonl`
+* `WAVEOS_AUDIT_ENABLED=true|false`
+* `WAVEOS_AUDIT_LOG_MAX_BYTES=5000000`
+* `WAVEOS_AUDIT_LOG_MAX_FILES=5`
+
+### Feature-specific env requirements
+
+- **Demo (no extra env required)**
+  - No env vars required.
+- **Metrics**
+  - `WAVEOS_METRICS_PORT`
+- **Tracing**
+  - `WAVEOS_OTEL_ENDPOINT`
+- **Alerting (webhook)**
+  - `WAVEOS_ALERT_WEBHOOK_URL`
+- **Alerting (Slack)**
+  - `WAVEOS_ALERT_SLACK_WEBHOOK_URL`
+- **Alerting (Email SMTP)**
+  - `WAVEOS_ALERT_EMAIL_TO`, `WAVEOS_ALERT_EMAIL_FROM`, `WAVEOS_ALERT_EMAIL_PROVIDER=smtp`
+  - `WAVEOS_ALERT_EMAIL_SMTP_HOST`, `WAVEOS_ALERT_EMAIL_SMTP_USER`, `WAVEOS_ALERT_EMAIL_SMTP_PASSWORD_SECRET`
+- **Alerting (Email SES)**
+  - `WAVEOS_ALERT_EMAIL_TO`, `WAVEOS_ALERT_EMAIL_FROM`, `WAVEOS_ALERT_EMAIL_PROVIDER=ses`
+  - `WAVEOS_ALERT_EMAIL_SES_REGION`
+- **RBAC tokens**
+  - `WAVEOS_AUTH_TOKENS`
+- **Secrets providers**
+  - Vault: `WAVEOS_VAULT_ADDR`, `WAVEOS_VAULT_PATH` (`WAVEOS_VAULT_TOKEN` is dev-only; prefer workload identity)
+  - AWS: `WAVEOS_AWS_REGION` (optional `WAVEOS_AWS_SECRET_ID`)
+  - GCP: `WAVEOS_GCP_PROJECT`
+  - `WAVEOS_*_SECRETS_JSON` adapters are dev/testing only, not for production
 
 ---
 
@@ -292,13 +330,3 @@ Wave OS supports a small set of runtime environment variables:
  Wave OS is built on the belief that:
  
  > Infrastructure should understand itself well enough to protect itself—and explain why.
- 
- ---
- 
- If you want next, I can:
- 
- * Tighten this into an **investor/partner README**
- * Add a **“Why Now”** section for NVIDIA / defense / AI clusters
- * Or generate the **ARCHITECTURE.md** that pairs with this cleanly
- 
- Just tell me.

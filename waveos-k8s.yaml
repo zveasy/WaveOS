@@ -1,0 +1,345 @@
+# waveos-k8s.yaml
+#
+# Apply:
+#   kubectl apply -f waveos-k8s.yaml
+#
+# Notes:
+# - This deploys Wave OS as a single Deployment with:
+#   - ConfigMap for non-secret config/env
+#   - Secret for auth tokens + optional alert/secrets-provider creds
+#   - Service exposing metrics (Prometheus scrape)
+# - Replace <ORG>/<REPO> image and any placeholders.
+# - If you use Vault/AWS/GCP secrets managers, prefer workload identity/IAM roles over static tokens.
+# - Wave OS does not yet ship a long-running server mode. Replace the command/args once a server/daemon exists.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: waveos
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: waveos-sa
+  namespace: waveos
+  annotations:
+    # Optional: If using AWS EKS IRSA, set the IAM role annotation here:
+    # eks.amazonaws.com/role-arn: arn:aws:iam::<ACCOUNT_ID>:role/waveos-secrets-read
+    {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: waveos-config
+  namespace: waveos
+data:
+  # Core
+  WAVEOS_LOG_FORMAT: "json"
+  WAVEOS_LOG_LEVEL: "INFO"
+  WAVEOS_METRICS_PORT: "9109"
+  # If Wave OS uses a config file, mount it below and set WAVEOS_CONFIG accordingly:
+  # WAVEOS_CONFIG: "/etc/waveos/config.toml"
+
+  # Tracing (optional)
+  # WAVEOS_OTEL_ENDPOINT: "http://otel-collector.observability.svc.cluster.local:4318/v1/traces"
+
+  # Alerts (optional)
+  # WAVEOS_ALERT_WEBHOOK_URL: "https://example.com/webhook"
+  # WAVEOS_ALERT_SLACK_WEBHOOK_URL: "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+  # WAVEOS_ALERT_EMAIL_PROVIDER: "smtp"
+  # WAVEOS_ALERT_EMAIL_TO: "ops@example.com"
+  # WAVEOS_ALERT_EMAIL_FROM: "waveos@example.com"
+  # WAVEOS_ALERT_EMAIL_SMTP_HOST: "smtp.example.com"
+  # WAVEOS_ALERT_EMAIL_SMTP_PORT: "587"
+  # WAVEOS_ALERT_EMAIL_SMTP_USER: "smtp-user"
+  # WAVEOS_ALERT_EMAIL_SMTP_PASSWORD_SECRET: "SMTP_PASSWORD"
+
+  # Secrets providers (optional)
+  # WAVEOS_SECRETS_PROVIDER: "aws"     # or "vault" or "gcp"
+  # WAVEOS_AWS_REGION: "us-east-1"
+  # WAVEOS_AWS_SECRET_ID: "waveos/production"
+  # WAVEOS_VAULT_ADDR: "https://vault.example.com"
+  # WAVEOS_VAULT_PATH: "secret/data/waveos"
+  # WAVEOS_GCP_PROJECT: "your-gcp-project"
+
+  # Audit log rotation knobs (examples)
+  # WAVEOS_AUDIT_LOG_MAX_BYTES: "10485760"  # 10MB
+  # WAVEOS_AUDIT_LOG_MAX_FILES: "10"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: waveos-secrets
+  namespace: waveos
+type: Opaque
+stringData:
+  # RBAC tokens (example format from your docs)
+  # IMPORTANT: Replace these values.
+  WAVEOS_AUTH_TOKENS: "token1=admin,token2=operator"
+
+  # Optional SMTP password if using WAVEOS_ALERT_EMAIL_SMTP_PASSWORD_SECRET=SMTP_PASSWORD
+  # SMTP_PASSWORD: "replace-me"
+
+  # If you must use a Vault token (not recommended in prod), set it here:
+  # WAVEOS_VAULT_TOKEN: "replace-me"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: waveos
+  namespace: waveos
+  labels:
+    app: waveos
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: waveos
+  template:
+    metadata:
+      labels:
+        app: waveos
+      annotations:
+        # Optional: Prometheus auto-scrape (if your cluster uses these annotations)
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9109"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: waveos-sa
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: waveos
+          image: ghcr.io/<ORG>/<REPO>:v1.0.0
+          imagePullPolicy: IfNotPresent
+          # Replace with a real long-running entrypoint when available.
+          command: ["/bin/sh", "-c"]
+          args: ["sleep infinity"]
+          envFrom:
+            - configMapRef:
+                name: waveos-config
+            - secretRef:
+                name: waveos-secrets
+          ports:
+            - name: metrics
+              containerPort: 9109
+              protocol: TCP
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: waveos-state
+              mountPath: /var/lib/waveos
+            - name: waveos-tmp
+              mountPath: /tmp
+            # Optional: mount a config file if Wave OS uses WAVEOS_CONFIG
+            # - name: waveos-config-file
+            #   mountPath: /etc/waveos
+            #   readOnly: true
+      volumes:
+        # Persistent state for reports/events/audit logs
+        - name: waveos-state
+          persistentVolumeClaim:
+            claimName: waveos-pvc
+        - name: waveos-tmp
+          emptyDir: {}
+        # Optional: config file mount (uncomment if you add a config.toml key in the ConfigMap)
+        # - name: waveos-config-file
+        #   configMap:
+        #     name: waveos-config-file
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: waveos-pvc
+  namespace: waveos
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+  # storageClassName: gp3  # uncomment and set for your cluster
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: waveos-metrics
+  namespace: waveos
+  labels:
+    app: waveos
+spec:
+  selector:
+    app: waveos
+  ports:
+    - name: metrics
+      port: 9109
+      targetPort: 9109
+      protocol: TCP
+  type: ClusterIP
+---
+# Batch Job for one-off CLI runs (baseline/run/report)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: waveos-run
+  namespace: waveos
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: waveos
+    spec:
+      serviceAccountName: waveos-sa
+      restartPolicy: Never
+      containers:
+        - name: waveos
+          image: ghcr.io/<ORG>/<REPO>:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              waveos sim --out /var/lib/waveos/demo_data &&
+              waveos baseline --in /var/lib/waveos/demo_data/baseline &&
+              waveos run --in /var/lib/waveos/demo_data/run --baseline /var/lib/waveos/demo_data/baseline --out /var/lib/waveos/out
+          envFrom:
+            - configMapRef:
+                name: waveos-config
+            - secretRef:
+                name: waveos-secrets
+          volumeMounts:
+            - name: waveos-state
+              mountPath: /var/lib/waveos
+      volumes:
+        - name: waveos-state
+          persistentVolumeClaim:
+            claimName: waveos-pvc
+---
+# CronJob for scheduled runs (e.g., nightly)
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: waveos-nightly
+  namespace: waveos
+spec:
+  schedule: "0 2 * * *"
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            app: waveos
+        spec:
+          serviceAccountName: waveos-sa
+          restartPolicy: Never
+          containers:
+            - name: waveos
+              image: ghcr.io/<ORG>/<REPO>:v1.0.0
+              imagePullPolicy: IfNotPresent
+              command: ["/bin/sh", "-c"]
+              args:
+                - |
+                  waveos sim --out /var/lib/waveos/demo_data &&
+                  waveos baseline --in /var/lib/waveos/demo_data/baseline &&
+                  waveos run --in /var/lib/waveos/demo_data/run --baseline /var/lib/waveos/demo_data/baseline --out /var/lib/waveos/out
+              envFrom:
+                - configMapRef:
+                    name: waveos-config
+                - secretRef:
+                    name: waveos-secrets
+              volumeMounts:
+                - name: waveos-state
+                  mountPath: /var/lib/waveos
+          volumes:
+            - name: waveos-state
+              persistentVolumeClaim:
+                claimName: waveos-pvc
+---
+# Job to re-render report HTML from existing outputs
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: waveos-report
+  namespace: waveos
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        app: waveos
+    spec:
+      serviceAccountName: waveos-sa
+      restartPolicy: Never
+      containers:
+        - name: waveos
+          image: ghcr.io/<ORG>/<REPO>:v1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              waveos report --in /var/lib/waveos/out
+          envFrom:
+            - configMapRef:
+                name: waveos-config
+            - secretRef:
+                name: waveos-secrets
+          volumeMounts:
+            - name: waveos-state
+              mountPath: /var/lib/waveos
+      volumes:
+        - name: waveos-state
+          persistentVolumeClaim:
+            claimName: waveos-pvc
+# Optional: NetworkPolicy (tight default). Adjust to your cluster needs.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: waveos-default-deny
+  namespace: waveos
+spec:
+  podSelector:
+    matchLabels:
+      app: waveos
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        # Allow Prometheus in "monitoring" namespace to scrape metrics
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9109
+  egress:
+    # Allow DNS
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - protocol: UDP
+          port: 53
+    # Allow outbound to OTEL collector / webhooks / Slack / SMTP as needed (tighten for your env)
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 587
+        - protocol: TCP
+          port: 25

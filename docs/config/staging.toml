@@ -1,0 +1,18 @@
+schema_version = 1
+log_format = "json"
+log_level = "INFO"
+metrics_port = 9109
+otel_endpoint = "http://otel-collector:4318/v1/traces"
+alert_webhook_url = "https://example.com/webhook"
+alert_slack_webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+alert_email_to = "ops@example.com"
+alert_email_from = "waveos@example.com"
+alert_email_provider = "smtp"
+alert_email_smtp_host = "smtp.example.com"
+alert_email_smtp_port = 587
+alert_email_smtp_user = "smtp-user"
+alert_email_smtp_password_secret = "SMTP_PASSWORD"
+secrets_provider = "env"
+feature_flags = { explainability = true, action_reroute = true, action_rate_limit = true }
+audit_log_path = "out/audit.jsonl"
+audit_enabled = true

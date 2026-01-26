@@ -21,3 +21,9 @@ Auth decisions are logged with:
 - role
 - permission
 - allowed/denied
+Audit log file location:
+- `audit_log_path` in config (default: `out/audit.jsonl`)
+
+## Retention and Rotation
+- `audit_max_bytes`: rotate when file exceeds size (default 5 MB)
+- `audit_max_files`: number of rotated files to keep (default 5)

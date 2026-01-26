@@ -1,0 +1,15 @@
+schema_version = 1
+log_format = "json"
+log_level = "INFO"
+metrics_port = 9109
+otel_endpoint = "http://otel-collector:4318/v1/traces"
+alert_webhook_url = "https://example.com/webhook"
+alert_slack_webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+alert_email_to = "ops@example.com"
+alert_email_from = "waveos@example.com"
+alert_email_provider = "ses"
+alert_email_ses_region = "us-east-1"
+secrets_provider = "aws"
+feature_flags = { explainability = true, action_reroute = true, action_rate_limit = true, action_qos = true, action_thermal = true }
+audit_log_path = "/var/log/waveos/audit.jsonl"
+audit_enabled = true

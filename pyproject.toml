@@ -25,6 +25,14 @@ dev = [
   "opentelemetry-sdk>=1.25",
   "opentelemetry-exporter-otlp>=1.25"
 ]
+secrets = [
+  "hvac>=2.0",
+  "boto3>=1.34",
+  "google-cloud-secret-manager>=2.20"
+]
+alerts = [
+  "boto3>=1.34"
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

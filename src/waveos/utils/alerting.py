@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 from waveos.utils.alerts import send_webhook
@@ -13,6 +13,7 @@ class AlertRoute:
     destination: str
     url: Optional[str] = None
     min_level: str = "WARN"
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 def route_alerts(events: List[Dict[str, Any]], routes: List[AlertRoute], run_id: str) -> None:
@@ -24,4 +25,6 @@ def route_alerts(events: List[Dict[str, Any]], routes: List[AlertRoute], run_id:
             send_slack(route.url, {"run_id": run_id})
         if route.destination == "email":
             recipient = route.url or ""
-            send_email(recipient, "Wave OS alert", f"run_id={run_id}")
+            provider = route.metadata.get("provider", "smtp")
+            settings = route.metadata
+            send_email(recipient, "Wave OS alert", f"run_id={run_id}", provider=provider, settings=settings)

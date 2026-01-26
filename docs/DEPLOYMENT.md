@@ -19,6 +19,18 @@ Use `docker-compose.yml` for a local container runtime. Mounts the repo and runs
 - `WAVEOS_ALERT_WEBHOOK_URL=https://example.com/webhook` for WARN/ERROR alerts
 - `WAVEOS_ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...`
 - `WAVEOS_ALERT_EMAIL_TO=ops@example.com`
+- `WAVEOS_ALERT_EMAIL_FROM=waveos@example.com`
+- `WAVEOS_ALERT_EMAIL_PROVIDER=smtp|ses`
+- `WAVEOS_ALERT_EMAIL_SMTP_HOST=smtp.example.com`
+- `WAVEOS_ALERT_EMAIL_SMTP_PORT=587`
+- `WAVEOS_ALERT_EMAIL_SMTP_USER=smtp-user`
+- `WAVEOS_ALERT_EMAIL_SMTP_PASSWORD_SECRET=SMTP_PASSWORD`
+- `WAVEOS_ALERT_EMAIL_SES_REGION=us-east-1`
+- `WAVEOS_SECRETS_PROVIDER=env|vault|aws|gcp`
+- `WAVEOS_AUDIT_LOG_PATH=out/audit.jsonl`
+- `WAVEOS_AUDIT_ENABLED=true|false`
+- `WAVEOS_AUDIT_LOG_MAX_BYTES=5000000`
+- `WAVEOS_AUDIT_LOG_MAX_FILES=5`
 
 ## Secrets
 Wave OS currently reads secrets from environment variables only.
@@ -29,6 +41,10 @@ Planned integrations: Vault, AWS Secrets Manager, GCP Secret Manager.
 - `--token <token>` on CLI to authenticate.
 
 ## Secrets Managers
-- Vault: configure in future with `WAVEOS_VAULT_ADDR` and token.
-- AWS Secrets Manager: configure with `WAVEOS_AWS_REGION` and IAM role.
-- GCP Secret Manager: configure with `WAVEOS_GCP_PROJECT`.
+- Vault: set `WAVEOS_VAULT_ADDR`, `WAVEOS_VAULT_PATH`. `WAVEOS_VAULT_TOKEN` is **dev-only**; prefer workload identity in production.
+- AWS Secrets Manager: set `WAVEOS_AWS_REGION`, optionally `WAVEOS_AWS_SECRET_ID`.
+- GCP Secret Manager: set `WAVEOS_GCP_PROJECT`.
+- JSON test adapters (**dev/testing only**; not recommended for production):
+  - `WAVEOS_VAULT_SECRETS_JSON='{"key":"value"}'`
+  - `WAVEOS_AWS_SECRETS_JSON='{"key":"value"}'`
+  - `WAVEOS_GCP_SECRETS_JSON='{"key":"value"}'`
