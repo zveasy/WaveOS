@@ -16,6 +16,7 @@ jobs:
       packages: write
     env:
       PUBLISH_ENABLED: ${{ startsWith(github.ref_name, 'v') && !contains(github.ref_name, '-rc') }}
+      PYPI_API_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -133,11 +134,27 @@ jobs:
           body_path: release-notes.md
           files: |
             dist/*
+      - name: Preflight publish settings
+        run: |
+          echo "GitHub Packages username: ${GITHUB_REPOSITORY_OWNER}"
+          if [ -n "${PYPI_API_TOKEN}" ]; then
+            echo "PYPI_API_TOKEN present (length: ${#PYPI_API_TOKEN})"
+          else
+            echo "PYPI_API_TOKEN missing (PyPI publish will be skipped)"
+          fi
       - name: Publish to GitHub Packages
         if: ${{ env.PUBLISH_ENABLED == 'true' }}
         env:
-          TWINE_USERNAME: ${{ github.actor }}
+          TWINE_USERNAME: ${{ github.repository_owner }}
           TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python -m pip install twine
           python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }}/ dist/*.whl dist/*.tar.gz
+      - name: Publish to PyPI
+        if: ${{ env.PYPI_API_TOKEN != '' }}
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ env.PYPI_API_TOKEN }}
+        run: |
+          python -m pip install twine
+          python -m twine upload dist/*.whl dist/*.tar.gz
