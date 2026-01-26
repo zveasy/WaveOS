@@ -21,7 +21,7 @@ def write_outputs(
     health_payload = [score.model_dump() for score in health_scores]
     events_payload = [event.model_dump() for event in events]
     actions_payload = [action.model_dump() for action in actions]
-    explainability_payload = _build_explainability(health_payload, actions_payload) if explainability else []
+    explainability_payload = _build_explainability(health_payload, actions_payload, run_id=run_id) if explainability else []
 
     health_path = out_dir / "health_summary.json"
     events_path = out_dir / "events.jsonl"
@@ -38,7 +38,11 @@ def write_outputs(
     return render_report(out_dir, health_payload, events_payload, actions_payload, run_id=run_id)
 
 
-def _build_explainability(health_payload: List[dict], actions_payload: List[dict]) -> List[dict]:
+def _build_explainability(
+    health_payload: List[dict],
+    actions_payload: List[dict],
+    run_id: str | None = None,
+) -> List[dict]:
     health_map = {(h["entity_type"], h["entity_id"]): h for h in health_payload}
     explainability: List[dict] = []
     for action in actions_payload:
@@ -46,6 +50,8 @@ def _build_explainability(health_payload: List[dict], actions_payload: List[dict
         health = health_map.get(key, {})
         explainability.append(
             {
+                "schema_version": 1,
+                "run_id": run_id,
                 "entity_type": action["entity_type"],
                 "entity_id": action["entity_id"],
                 "action": action["action"],

@@ -23,3 +23,12 @@ Use `docker-compose.yml` for a local container runtime. Mounts the repo and runs
 ## Secrets
 Wave OS currently reads secrets from environment variables only.
 Planned integrations: Vault, AWS Secrets Manager, GCP Secret Manager.
+
+## Authentication
+- `WAVEOS_AUTH_TOKENS=token1=admin,token2=operator` to map tokens to roles.
+- `--token <token>` on CLI to authenticate.
+
+## Secrets Managers
+- Vault: configure in future with `WAVEOS_VAULT_ADDR` and token.
+- AWS Secrets Manager: configure with `WAVEOS_AWS_REGION` and IAM role.
+- GCP Secret Manager: configure with `WAVEOS_GCP_PROJECT`.

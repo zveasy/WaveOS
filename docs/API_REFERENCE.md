@@ -26,6 +26,11 @@ Render HTML report from outputs.
 waveos report --in ./out --open
 ```
 
+### CLI Auth
+```
+waveos --role operator --token <token> run --in ./demo_data/run --baseline ./demo_data/baseline --out ./out
+```
+
 ## Outputs
 - `health_summary.json`
 - `events.jsonl`

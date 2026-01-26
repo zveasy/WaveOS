@@ -18,6 +18,8 @@ class WaveOSConfig(BaseModel):
     alert_slack_webhook_url: Optional[str] = None
     alert_email_to: Optional[str] = None
     feature_flags: Dict[str, bool] = Field(default_factory=dict)
+    auth_tokens: Dict[str, str] = Field(default_factory=dict)
+    secrets_provider: Literal["env", "vault", "aws", "gcp"] = "env"
     retry_count: int = 3
     retry_base_delay: float = 0.2
     retry_max_delay: float = 2.0

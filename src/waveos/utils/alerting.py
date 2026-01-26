@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from waveos.utils.alerts import send_webhook
+from waveos.utils.alert_integrations import send_email, send_slack
 
 
 @dataclass
@@ -19,9 +20,8 @@ def route_alerts(events: List[Dict[str, Any]], routes: List[AlertRoute], run_id:
         if route.destination == "webhook" and route.url:
             payload = {"run_id": run_id, "events": events, "route": route.name}
             send_webhook(route.url, payload)
-        if route.destination == "slack":
-            # Placeholder for Slack integration
-            continue
+        if route.destination == "slack" and route.url:
+            send_slack(route.url, {"run_id": run_id})
         if route.destination == "email":
-            # Placeholder for email integration
-            continue
+            recipient = route.url or ""
+            send_email(recipient, "Wave OS alert", f"run_id={run_id}")

@@ -15,6 +15,8 @@ Wave OS supports config via:
 - `alert_email_to`: optional email recipient
 - `feature_flags`: map of flags (boolean)
 - `schema_version`: config schema version
+- `auth_tokens`: map of tokens to roles
+- `secrets_provider`: env|vault|aws|gcp
 
 ## Example (TOML)
 ```toml
@@ -27,6 +29,8 @@ alert_slack_webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
 alert_email_to = "ops@example.com"
 schema_version = 1
 feature_flags = { explainability = true }
+auth_tokens = { "token-1" = "admin", "token-2" = "operator" }
+secrets_provider = "env"
 ```
 
 ## Example Config File
@@ -50,6 +54,8 @@ alert_webhook_url = "https://example.com/webhook"
   "alert_slack_webhook_url": "https://hooks.slack.com/services/XXX/YYY/ZZZ",
   "alert_email_to": "ops@example.com",
   "schema_version": 1,
-  "feature_flags": { "explainability": true }
+  "feature_flags": { "explainability": true },
+  "auth_tokens": { "token-1": "admin", "token-2": "operator" },
+  "secrets_provider": "env"
 }
 ```

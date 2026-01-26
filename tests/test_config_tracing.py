@@ -43,3 +43,17 @@ def test_load_config_invalid_log_format(tmp_path: Path) -> None:
     config_path.write_text('{"log_format": "xml"}', encoding="utf-8")
     with pytest.raises(ValidationError):
         load_config(config_path)
+
+
+def test_load_config_invalid_schema_version(tmp_path: Path) -> None:
+    config_path = tmp_path / "waveos.json"
+    config_path.write_text('{"schema_version": 2}', encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_config(config_path)
+
+
+def test_load_config_auth_tokens(tmp_path: Path) -> None:
+    config_path = tmp_path / "waveos.json"
+    config_path.write_text('{"auth_tokens": {"token-1": "admin"}}', encoding="utf-8")
+    config = load_config(config_path)
+    assert config.auth_tokens["token-1"] == "admin"

@@ -33,9 +33,15 @@ from waveos.utils import (
     write_json,
     write_jsonl,
     init_tracer,
-    send_webhook,
     AlertRoute,
     route_alerts,
+    Principal,
+    Role,
+    Permission,
+    authorize,
+    TokenAuth,
+    load_token_roles_from_env,
+    load_token_roles_from_config,
 )
 from pydantic import ValidationError
 
@@ -114,6 +120,9 @@ def cmd_sim(args: argparse.Namespace) -> int:
 
 
 def cmd_baseline(args: argparse.Namespace) -> int:
+    if not _authorize(args, Permission.RUN_PIPELINE):
+        console.print("Access denied: run_pipeline required")
+        return 3
     in_dir = Path(args.input)
     samples = _load_samples(in_dir)
     baseline_stats, _ = build_stats(samples)
@@ -125,6 +134,9 @@ def cmd_baseline(args: argparse.Namespace) -> int:
 
 
 def cmd_run(args: argparse.Namespace) -> int:
+    if not _authorize(args, Permission.RUN_PIPELINE):
+        console.print("Access denied: run_pipeline required")
+        return 3
     in_dir = Path(args.input)
     out_dir = Path(args.output)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -140,7 +152,9 @@ def cmd_run(args: argparse.Namespace) -> int:
     baseline_map = _baseline_map(baseline_records)
     run_map = {stat.entity_id: stat for stat in run_stats}
     scores = score_links(baseline_map, run_map, run_id=run_id)
-    actions = recommend_actions(scores, run_id=run_id)
+    config = getattr(args, "config_obj", None)
+    feature_flags = config.feature_flags if config else {}
+    actions = recommend_actions(scores, run_id=run_id, feature_flags=feature_flags)
     events = _build_events(scores, run_id=run_id)
     MockActuator().apply(actions)
     _send_alerts_if_configured(args, run_id, events)
@@ -158,6 +172,9 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
+    if not _authorize(args, Permission.VIEW_REPORTS):
+        console.print("Access denied: view_reports required")
+        return 3
     out_dir = Path(args.input)
     health_path = out_dir / "health_summary.json"
     events_path = out_dir / "events.jsonl"
@@ -185,7 +202,7 @@ def _send_alerts_if_configured(args: argparse.Namespace, run_id: str, events: Li
     if config.alert_slack_webhook_url:
         routes.append(AlertRoute(name="slack", destination="slack", url=config.alert_slack_webhook_url))
     if config.alert_email_to:
-        routes.append(AlertRoute(name="email", destination="email"))
+        routes.append(AlertRoute(name="email", destination="email", url=config.alert_email_to))
     if not routes:
         return
     try:
@@ -194,9 +211,36 @@ def _send_alerts_if_configured(args: argparse.Namespace, run_id: str, events: Li
         logger.warning("Alert routing failed: %s", exc)
 
 
+def _authorize(args: argparse.Namespace, permission: Permission) -> bool:
+    token = args.token or None
+    config = getattr(args, "config_obj", None)
+    token_roles = {}
+    if config:
+        token_roles.update(load_token_roles_from_config(config.auth_tokens))
+    token_roles.update(load_token_roles_from_env())
+    principal: Principal | None = None
+    if token_roles:
+        principal = TokenAuth(token_roles).authenticate(token)
+    if not principal:
+        principal_name = "local-user"
+        role = Role(args.role)
+        principal = Principal(name=principal_name, role=role)
+    allowed = authorize(principal, permission)
+    logger.info(
+        "authz principal=%s role=%s permission=%s allowed=%s",
+        principal.name,
+        principal.role.value,
+        permission.value,
+        allowed,
+    )
+    return allowed
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="waveos", description="Wave OS demo CLI")
     parser.add_argument("--config", help="Path to config file (toml/json)")
+    parser.add_argument("--role", choices=[role.value for role in Role], default=Role.OPERATOR.value)
+    parser.add_argument("--token", help="Auth token for RBAC")
     sub = parser.add_subparsers(dest="command")
 
     sim_parser = sub.add_parser("sim", help="Generate simulated telemetry")

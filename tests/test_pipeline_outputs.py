@@ -32,7 +32,7 @@ def test_write_outputs_creates_reports(tmp_path: Path) -> None:
             rationale="Test",
         )
     ]
-    report_path = write_outputs(tmp_path, scores, events, actions)
+    report_path = write_outputs(tmp_path, scores, events, actions, run_id="run-test")
     assert report_path.exists()
     assert (tmp_path / "health_summary.json").exists()
     assert (tmp_path / "events.jsonl").exists()
@@ -40,3 +40,5 @@ def test_write_outputs_creates_reports(tmp_path: Path) -> None:
     assert (tmp_path / "explainability.json").exists()
     assert read_json(tmp_path / "health_summary.json")[0]["entity_id"] == "link-1"
     assert read_jsonl(tmp_path / "events.jsonl")[0]["level"] == "INFO"
+    explainability = read_json(tmp_path / "explainability.json")
+    assert explainability[0]["run_id"] == "run-test"

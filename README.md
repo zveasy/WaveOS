@@ -190,6 +190,7 @@ Wave OS supports a small set of runtime environment variables:
 * `WAVEOS_ALERT_WEBHOOK_URL=https://example.com/webhook` for WARN/ERROR alerts
 * `WAVEOS_ALERT_SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...`
 * `WAVEOS_ALERT_EMAIL_TO=ops@example.com`
+* `WAVEOS_AUTH_TOKENS=token1=admin,token2=operator` for RBAC
 
 ---
 

@@ -8,8 +8,14 @@ from waveos.utils.config import WaveOSConfig, load_config
 from waveos.utils.tracing import init_tracer, span
 from waveos.utils.alerts import send_webhook
 from waveos.utils.alerting import AlertRoute, route_alerts
-from waveos.utils.secrets import get_secret
+from waveos.utils.secrets import (
+    get_secret,
+    get_secret_from_aws,
+    get_secret_from_gcp,
+    get_secret_from_vault,
+)
 from waveos.utils.rbac import Principal, Role, Permission, authorize
+from waveos.utils.auth import TokenAuth, load_token_roles_from_env, load_token_roles_from_config
 from waveos.utils.time import parse_timestamp, utc_now
 
 __all__ = [
@@ -29,10 +35,16 @@ __all__ = [
     "AlertRoute",
     "route_alerts",
     "get_secret",
+    "get_secret_from_vault",
+    "get_secret_from_aws",
+    "get_secret_from_gcp",
     "Principal",
     "Role",
     "Permission",
     "authorize",
+    "TokenAuth",
+    "load_token_roles_from_env",
+    "load_token_roles_from_config",
     "parse_timestamp",
     "read_csv",
     "read_json",
