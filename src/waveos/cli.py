@@ -15,6 +15,7 @@ from rich.table import Table
 
 from waveos.actuators import MockActuator
 from waveos.collectors import load_records
+from waveos.licensing import LicenseError, require_license
 from waveos.models import BaselineStats, Event, EventLevel, HealthScore, HealthStatus, RunStats
 from waveos.normalize import normalize_records
 from waveos.policy import recommend_actions
@@ -315,6 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    try:
+        require_license()
+    except LicenseError as exc:
+        console.print(str(exc))
+        raise SystemExit(3)
     try:
         config = load_config(Path(args.config) if args.config else None)
     except (ValidationError, ValueError) as exc:

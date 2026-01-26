@@ -7,6 +7,7 @@ on:
 
 jobs:
   build-and-publish:
+    if: ${{ !contains(github.ref_name, '-rc') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
