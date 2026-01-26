@@ -4,11 +4,10 @@ on:
   push:
     tags:
       - "v*"
-    tags-ignore:
-      - "v*-rc*"
 
 jobs:
   build-and-publish:
+    # Guard: RC tags should be skipped; only non-RC tags publish.
     if: ${{ !contains(github.ref_name, '-rc') }}
     runs-on: ubuntu-latest
     permissions:
