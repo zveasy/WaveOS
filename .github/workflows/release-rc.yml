@@ -110,8 +110,11 @@ jobs:
       - name: Create GitHub Release (pre-release)
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           body_path: release-notes-rc.md
           prerelease: true
+          fail_on_unmatched_files: false
+          append_body: true
           files: |
             dist/*
       - name: Publish to GitHub Packages (staging)
