@@ -35,6 +35,14 @@ jobs:
           path.write_text(text, encoding="utf-8")
           print(f"Set version to {version}")
           PY
+      - name: Debug version
+        run: |
+          python - <<'PY'
+          import tomllib
+          data = tomllib.loads(open("pyproject.toml","rb").read())
+          print("version:", data["project"]["version"])
+          PY
+          ls -l dist || true
       - name: Install build tooling
         run: |
           python -m pip install --upgrade pip
