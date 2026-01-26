@@ -19,7 +19,17 @@ from waveos.policy import recommend_actions
 from waveos.reporting import render_report, write_outputs
 from waveos.scoring import build_stats, score_links
 from waveos.sim import build_demo_dataset
-from waveos.utils import get_logger, read_json, read_jsonl, setup_logging, write_json, write_jsonl
+from waveos.utils import (
+    get_logger,
+    install_signal_handlers,
+    read_json,
+    read_jsonl,
+    setup_logging,
+    should_shutdown,
+    start_metrics_server,
+    write_json,
+    write_jsonl,
+)
 
 console = Console()
 logger = get_logger("waveos.cli")
@@ -35,6 +45,8 @@ def _find_telemetry_files(in_dir: Path) -> List[Path]:
 def _load_samples(in_dir: Path):
     samples = []
     for path in _find_telemetry_files(in_dir):
+        if should_shutdown():
+            return samples
         records = load_records(path)
         samples.extend(normalize_records(records))
     return samples
@@ -173,6 +185,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     setup_logging()
+    start_metrics_server()
+    install_signal_handlers(lambda: logger.warning("Graceful shutdown requested"))
     parser = build_parser()
     args = parser.parse_args()
     if not getattr(args, "func", None):

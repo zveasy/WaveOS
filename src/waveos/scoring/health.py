@@ -4,7 +4,7 @@ from collections import defaultdict
 from typing import Dict, Iterable, List, Tuple
 
 from waveos.models import BaselineStats, HealthScore, HealthStatus, RunStats, TelemetrySample
-from waveos.utils import get_logger
+from waveos.utils import get_logger, histograms
 
 logger = get_logger("waveos.scoring")
 
@@ -56,47 +56,49 @@ def build_stats(samples: List[TelemetrySample]) -> Tuple[List[BaselineStats], Li
 
 def score_links(baseline: Dict[str, BaselineStats], run: Dict[str, RunStats]) -> List[HealthScore]:
     scores: List[HealthScore] = []
-    for link_id, run_stats in run.items():
-        base_stats = baseline.get(link_id)
-        if not base_stats:
-            logger.warning("Missing baseline for link %s", link_id)
-            continue
-        drivers: List[str] = []
-        severity = 0.0
-        for metric, run_value in run_stats.metrics.items():
-            base_value = base_stats.metrics.get(metric, 0.0)
-            if metric == "temperature_c":
-                delta = run_value - base_value
-                if delta >= 10:
-                    drivers.append("temperature_drift")
-                    severity += 40
-                elif delta >= 5:
-                    drivers.append("temperature_warning")
-                    severity += 20
+    duration = histograms()["scoring_duration"]
+    with duration.time():
+        for link_id, run_stats in run.items():
+            base_stats = baseline.get(link_id)
+            if not base_stats:
+                logger.warning("Missing baseline for link %s", link_id)
+                continue
+            drivers: List[str] = []
+            severity = 0.0
+            for metric, run_value in run_stats.metrics.items():
+                base_value = base_stats.metrics.get(metric, 0.0)
+                if metric == "temperature_c":
+                    delta = run_value - base_value
+                    if delta >= 10:
+                        drivers.append("temperature_drift")
+                        severity += 40
+                    elif delta >= 5:
+                        drivers.append("temperature_warning")
+                        severity += 20
+                else:
+                    ratio = (run_value + 1e-6) / (base_value + 1e-6)
+                    if ratio >= 3:
+                        drivers.append(f"{metric}_spike")
+                        severity += 35
+                    elif ratio >= 1.5:
+                        drivers.append(f"{metric}_increase")
+                        severity += 15
+            score = max(0.0, 100.0 - severity)
+            if score >= 85:
+                status = HealthStatus.PASS
+            elif score >= 60:
+                status = HealthStatus.WARN
             else:
-                ratio = (run_value + 1e-6) / (base_value + 1e-6)
-                if ratio >= 3:
-                    drivers.append(f"{metric}_spike")
-                    severity += 35
-                elif ratio >= 1.5:
-                    drivers.append(f"{metric}_increase")
-                    severity += 15
-        score = max(0.0, 100.0 - severity)
-        if score >= 85:
-            status = HealthStatus.PASS
-        elif score >= 60:
-            status = HealthStatus.WARN
-        else:
-            status = HealthStatus.FAIL
-        scores.append(
-            HealthScore(
-                entity_type="link",
-                entity_id=link_id,
-                score=score,
-                status=status,
-                drivers=drivers,
-                window_start=run_stats.window_start,
-                window_end=run_stats.window_end,
+                status = HealthStatus.FAIL
+            scores.append(
+                HealthScore(
+                    entity_type="link",
+                    entity_id=link_id,
+                    score=score,
+                    status=status,
+                    drivers=drivers,
+                    window_start=run_stats.window_start,
+                    window_end=run_stats.window_end,
+                )
             )
-        )
     return scores

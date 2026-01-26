@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from waveos.models import Link, TelemetrySample
-from waveos.utils import utc_now, write_json, write_jsonl
+from waveos.utils import should_shutdown, utc_now, write_json, write_jsonl
 
 
 def _make_links(count: int) -> List[Link]:
@@ -68,6 +68,8 @@ def generate_telemetry(
     for link in links:
         drift = drift_map.get(link.id, {})
         for _ in range(samples_per_link):
+            if should_shutdown():
+                return samples
             samples.append(_sample_for_link(link.id, baseline, drift))
     out_dir.mkdir(parents=True, exist_ok=True)
     write_json(out_dir / "links.json", [link.model_dump() for link in links])

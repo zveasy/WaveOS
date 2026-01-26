@@ -1,0 +1,125 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install build tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build
+      - name: Build dist
+        run: python -m build
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+      - name: Generate SBOM
+        run: |
+          syft dist/*.whl -o spdx-json=dist/sbom.spdx.json
+      - name: Create checksums
+        run: |
+          python - <<'PY'
+          import hashlib
+          from pathlib import Path
+
+          dist = Path("dist")
+          lines = []
+          for artifact in sorted(dist.glob("*")):
+            digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+            lines.append(f"{digest}  {artifact.name}")
+          Path("dist/SHA256SUMS").write_text("\n".join(lines) + "\n")
+          PY
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+      - name: Sign artifacts (keyless OIDC)
+        run: |
+          for artifact in dist/*; do
+            cosign sign-blob --yes \
+              --output-signature "${artifact}.sig" \
+              --output-certificate "${artifact}.crt" \
+              "${artifact}"
+          done
+      - name: Sign SBOM (keyless OIDC)
+        run: |
+          cosign sign-blob --yes \
+            --output-signature "dist/sbom.spdx.json.sig" \
+            --output-certificate "dist/sbom.spdx.json.crt" \
+            "dist/sbom.spdx.json"
+      - name: Generate base release notes
+        id: generate_notes
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const tag_name = context.ref.replace("refs/tags/", "");
+            const result = await github.rest.repos.generateReleaseNotes({
+              owner,
+              repo,
+              tag_name,
+              target_commitish: context.sha,
+            });
+            require("fs").writeFileSync("release-notes.md", result.data.body + "\n");
+      - name: Append audit sections
+        run: |
+          {
+            echo
+            echo "### Artifacts"
+            ls -1 dist | sed 's/^/- /'
+            echo
+            echo "### Checksums"
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+            echo
+            echo "### 🔐 Verify Release Artifacts"
+            echo '```'
+            echo "cosign verify \\"
+            echo "  --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}\" \\"
+            echo "  --certificate-oidc-issuer \"https://token.actions.githubusercontent.com\" \\"
+            echo "  <artifact>"
+            echo '```'
+            echo
+            echo "### 📦 Verify SBOM"
+            echo
+            echo "The SBOM is generated during CI and signed using cosign keyless (OIDC). No long-lived signing keys are used."
+            echo
+            echo '```'
+            echo "cosign verify-blob \\"
+            echo "  --certificate-identity \"https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${GITHUB_REF_NAME}\" \\"
+            echo "  --certificate-oidc-issuer \"https://token.actions.githubusercontent.com\" \\"
+            echo "  --signature sbom.spdx.json.sig \\"
+            echo "  sbom.spdx.json"
+            echo '```'
+            echo
+            echo "### SBOM"
+            echo "- dist/sbom.spdx.json"
+          } >> release-notes.md
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          files: |
+            dist/*
+      - name: Publish to GitHub Packages
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python -m pip install twine
+          python -m twine upload --repository-url https://pypi.pkg.github.com/${{ github.repository_owner }} dist/*
+      - name: Publish to PyPI
+        if: ${{ secrets.PYPI_API_TOKEN != '' }}
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

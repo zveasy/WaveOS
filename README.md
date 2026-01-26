@@ -170,11 +170,21 @@ It explains **what Wave OS is today**, **why it exists**, and **what it becomes*
  waveos report --in out --open
  ```
 
- Outputs are written under `out/` (including `report.html`).
- 
- ---
- 
- ## Current Status (V1)
+Outputs are written under `out/` (including `report.html`).
+
+---
+
+## Environment
+
+Wave OS supports a small set of runtime environment variables:
+
+* `WAVEOS_LOG_FORMAT=json|text` (default: `json`)
+* `WAVEOS_LOG_LEVEL=INFO|DEBUG|...`
+* `WAVEOS_METRICS_PORT=9109` to enable the Prometheus metrics endpoint
+
+---
+
+## Current Status (V1)
  
  Wave OS currently provides:
  
