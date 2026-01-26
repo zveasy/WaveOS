@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Wave OS Report</title>
+    <style>
+      body {
+        font-family: "Georgia", "Times New Roman", serif;
+        margin: 24px;
+        background: #f6f5f1;
+        color: #1b1b1b;
+      }
+      header {
+        border-bottom: 2px solid #1b1b1b;
+        margin-bottom: 16px;
+      }
+      .section {
+        margin-top: 24px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #ffffff;
+      }
+      th,
+      td {
+        border: 1px solid #d0cfc7;
+        padding: 8px;
+        text-align: left;
+        font-size: 14px;
+      }
+      th {
+        background: #f0ede6;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
+      }
+      .PASS {
+        background: #cfe8d4;
+      }
+      .WARN {
+        background: #f3e3b1;
+      }
+      .FAIL {
+        background: #f2b1b1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Wave OS Run Report</h1>
+      <p>Health, events, and recommended actions.</p>
+    </header>
+
+    <section class="section">
+      <h2>Health Summary</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Status</th>
+            <th>Score</th>
+            <th>Drivers</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for score in health_scores %}
+          <tr>
+            <td>{{ score.entity_type }} / {{ score.entity_id }}</td>
+            <td><span class="badge {{ score.status }}">{{ score.status }}</span></td>
+            <td>{{ "%.1f"|format(score.score) }}</td>
+            <td>{{ score.drivers|join(", ") }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Recommended Actions</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Entity</th>
+            <th>Rationale</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for action in actions %}
+          <tr>
+            <td>{{ action.action }}</td>
+            <td>{{ action.entity_type }} / {{ action.entity_id }}</td>
+            <td>{{ action.rationale }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Events</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Level</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for event in events %}
+          <tr>
+            <td>{{ event.timestamp }}</td>
+            <td>{{ event.level }}</td>
+            <td>{{ event.message }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+version: "3.9"
+services:
+  waveos:
+    image: python:3.11-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+    command: ["/bin/sh", "-c", "echo 'Wave OS demo container' && sleep 1"]
