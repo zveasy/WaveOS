@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+    tags-ignore:
+      - "v*-rc*"
 
 jobs:
   build-and-publish:
