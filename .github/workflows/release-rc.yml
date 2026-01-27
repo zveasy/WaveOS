@@ -45,13 +45,17 @@ jobs:
           grep -n '^version' pyproject.toml || true
           ls -l dist || true
       - name: Guard version matches tag
+        env:
+          GIT_TAG: ${{ github.ref_name }}
         run: |
-          python - <<'PY'
-          import tomllib
-          tag = "${GITHUB_REF_NAME}"
+          python - <<PY
+          import os, tomllib
+
+          tag = os.environ["GIT_TAG"]
           if tag.startswith("v"):
             tag = tag[1:]
           expected = tag.replace("-rc", "rc")
+
           with open("pyproject.toml","rb") as handle:
             data = tomllib.load(handle)
           actual = data["project"]["version"]
