@@ -18,19 +18,31 @@ jobs:
         with:
           python-version: "3.11"
       - name: Align package version to tag
+        env:
+          GIT_TAG: ${{ github.ref_name }}
         run: |
-          python - <<'PY'
-          import re
-          from pathlib import Path
-          tag = "${GITHUB_REF_NAME}"
+          python - <<PY
+          import os, re
+
+          tag = os.environ["GIT_TAG"]
           if tag.startswith("v"):
             tag = tag[1:]
-          version = tag.replace("-rc", "rc")
-          path = Path("pyproject.toml")
-          text = path.read_text(encoding="utf-8")
-          text = re.sub(r'^version\\s*=\\s*".*?"', f'version = "{version}"', text, flags=re.M)
-          path.write_text(text, encoding="utf-8")
-          print(f"Set version to {version}")
+          expected = tag.replace("-rc", "rc")
+
+          path = "pyproject.toml"
+          raw = open(path, "r", encoding="utf-8").read()
+
+          new = re.sub(
+              r'(?ms)(^\\[project\\].*?^\\s*version\\s*=\\s*")([^"]+)(")',
+              lambda m: m.group(1) + expected + m.group(3),
+              raw,
+              count=1,
+          )
+          if new == raw:
+            raise SystemExit("Could not find [project].version in pyproject.toml")
+
+          open(path, "w", encoding="utf-8").write(new)
+          print(f"Set version to {expected}")
           PY
       - name: Clean build outputs
         run: rm -rf dist build *.egg-info
