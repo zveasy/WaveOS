@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
+import zipfile
 
 from jinja2 import Environment, FileSystemLoader
 
-from waveos.models import ActionRecommendation, Event, HealthScore
-from waveos.utils import span, write_json, write_jsonl
+from waveos.models import ActionRecommendation, Event, HealthScore, RunStats
+from waveos.utils import span, write_csv, write_json, write_jsonl
 
 
 def write_outputs(
@@ -16,6 +17,9 @@ def write_outputs(
     actions: Iterable[ActionRecommendation],
     run_id: str | None = None,
     explainability: bool = True,
+    run_meta: Optional[dict] = None,
+    run_stats: Optional[Iterable[RunStats]] = None,
+    evidence_pack_enabled: bool = True,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     health_payload = [score.model_dump() for score in health_scores]
@@ -27,6 +31,8 @@ def write_outputs(
     events_path = out_dir / "events.jsonl"
     actions_path = out_dir / "actions.json"
     explainability_path = out_dir / "explainability.json"
+    run_meta_path = out_dir / "run_meta.json"
+    metrics_path = out_dir / "metrics.csv"
     write_json(health_path, health_payload)
     write_json(actions_path, actions_payload)
     if explainability:
@@ -34,8 +40,39 @@ def write_outputs(
     else:
         explainability_path.unlink(missing_ok=True)
     write_jsonl(events_path, events_payload)
+    if run_meta:
+        write_json(run_meta_path, run_meta)
+    if run_stats:
+        rows = []
+        for stat in run_stats:
+            for metric, value in stat.metrics.items():
+                rows.append(
+                    {
+                        "run_id": run_id or "",
+                        "entity_type": stat.entity_type,
+                        "entity_id": stat.entity_id,
+                        "metric": metric,
+                        "value": value,
+                        "window_start": stat.window_start,
+                        "window_end": stat.window_end,
+                    }
+                )
+        if rows:
+            write_csv(metrics_path, rows, fieldnames=list(rows[0].keys()))
 
-    return render_report(out_dir, health_payload, events_payload, actions_payload, run_id=run_id)
+    report_path = render_report(out_dir, health_payload, events_payload, actions_payload, run_id=run_id)
+    if evidence_pack_enabled:
+        _export_evidence_pack(out_dir, run_id)
+    return report_path
+
+
+def _export_evidence_pack(out_dir: Path, run_id: str | None) -> None:
+    name = f"evidence_pack_{run_id or 'run'}.zip"
+    pack_path = out_dir / name
+    with zipfile.ZipFile(pack_path, "w", compression=zipfile.ZIP_DEFLATED) as handle:
+        for path in out_dir.iterdir():
+            if path.is_file() and path.name != pack_path.name:
+                handle.write(path, arcname=path.name)
 
 
 def _build_explainability(

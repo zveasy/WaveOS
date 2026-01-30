@@ -46,6 +46,18 @@ def counters() -> dict[str, Counter]:
             "Total normalization errors",
             registry=registry,
         ),
+        "proxy_connections": Counter(
+            "waveos_proxy_connections_total",
+            "Total proxy connections handled",
+            ["direction"],
+            registry=registry,
+        ),
+        "proxy_bytes": Counter(
+            "waveos_proxy_bytes_total",
+            "Total proxy bytes forwarded",
+            ["direction"],
+            registry=registry,
+        ),
     }
     return _counters
 

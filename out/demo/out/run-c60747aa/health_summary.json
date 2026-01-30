@@ -1,0 +1,97 @@
+[
+  {
+    "details": {
+      "battery_soc_pct": 54.41339663168304,
+      "charger_faults": 0.0,
+      "charger_status": "ok",
+      "current_a": 149.9767397458901,
+      "power_kw": 81.69860717581707,
+      "voltage_v": 540.5869321795037
+    },
+    "drivers": [
+      "tx_power_dbm_increase",
+      "power_kw_spike",
+      "energy_kwh_spike",
+      "voltage_v_spike",
+      "battery_soc_pct_spike"
+    ],
+    "entity_id": "link-1",
+    "entity_type": "link",
+    "score": 0.0,
+    "status": "FAIL",
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  },
+  {
+    "details": {
+      "battery_soc_pct": 55.83548921772133,
+      "charger_faults": 0.0,
+      "charger_status": "ok",
+      "current_a": 151.35852398479756,
+      "power_kw": 82.97680947058618,
+      "voltage_v": 554.7556277064566
+    },
+    "drivers": [
+      "errors_spike",
+      "drops_increase",
+      "power_kw_spike",
+      "energy_kwh_spike",
+      "voltage_v_spike",
+      "battery_soc_pct_spike"
+    ],
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "score": 0.0,
+    "status": "FAIL",
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  },
+  {
+    "details": {
+      "battery_soc_pct": 53.80723152807881,
+      "charger_faults": 0.0,
+      "charger_status": "ok",
+      "current_a": 154.90025339152092,
+      "power_kw": 90.09437957971623,
+      "voltage_v": 583.5122671623183
+    },
+    "drivers": [
+      "temperature_drift",
+      "power_kw_spike",
+      "energy_kwh_spike",
+      "voltage_v_spike",
+      "battery_soc_pct_spike"
+    ],
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "score": 0.0,
+    "status": "FAIL",
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  },
+  {
+    "details": {
+      "battery_soc_pct": 52.944009245363404,
+      "charger_faults": 1.0,
+      "charger_status": "fault",
+      "current_a": 290.2297812759422,
+      "power_kw": 87.45511275673024,
+      "voltage_v": 544.5339069122826
+    },
+    "drivers": [
+      "retries_increase",
+      "congestion_pct_spike",
+      "power_kw_spike",
+      "energy_kwh_spike",
+      "voltage_v_spike",
+      "battery_soc_pct_spike",
+      "charger_fault"
+    ],
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "score": 0.0,
+    "status": "FAIL",
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  }
+]

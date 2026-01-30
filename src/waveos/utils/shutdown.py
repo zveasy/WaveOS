@@ -26,3 +26,7 @@ def trigger_shutdown(on_shutdown: Callable[[], None] | None = None) -> None:
     _shutdown.set()
     if on_shutdown:
         on_shutdown()
+
+
+def reset_shutdown() -> None:
+    _shutdown.clear()

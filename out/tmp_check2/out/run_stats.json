@@ -1,0 +1,74 @@
+[
+  {
+    "entity_id": "link-1",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 2.131946756692725e-09,
+      "congestion_pct": 4.904990879806399,
+      "drops": 0.4625,
+      "errors": 0.9,
+      "fec_corrected": 3.3,
+      "fec_uncorrected": 1.65,
+      "retries": 0.4,
+      "rx_power_dbm": -1.8115073639252781,
+      "temperature_c": 43.346911331751244,
+      "tx_power_dbm": 0.0295011782899972
+    },
+    "window_end": "2026-01-30 16:54:30.257616+00:00",
+    "window_start": "2026-01-30 16:54:30.256435+00:00"
+  },
+  {
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 4.415330083211022e-09,
+      "congestion_pct": 4.850528802560723,
+      "drops": 1.075,
+      "errors": 3.5625,
+      "fec_corrected": 2.95,
+      "fec_uncorrected": 1.475,
+      "retries": 0.4875,
+      "rx_power_dbm": -1.265305521605094,
+      "temperature_c": 42.30708541373581,
+      "tx_power_dbm": -0.03720550115632453
+    },
+    "window_end": "2026-01-30 16:54:30.257616+00:00",
+    "window_start": "2026-01-30 16:54:30.256435+00:00"
+  },
+  {
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 1.991087959328591e-09,
+      "congestion_pct": 5.1136729783128505,
+      "drops": 0.5125,
+      "errors": 1.2625,
+      "fec_corrected": 3.025,
+      "fec_uncorrected": 1.5125,
+      "retries": 0.6125,
+      "rx_power_dbm": -1.8858403927703276,
+      "temperature_c": 54.14449222186634,
+      "tx_power_dbm": -0.09754925439059162
+    },
+    "window_end": "2026-01-30 16:54:30.257616+00:00",
+    "window_start": "2026-01-30 16:54:30.256435+00:00"
+  },
+  {
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 1.9311601899945373e-09,
+      "congestion_pct": 25.006437356178385,
+      "drops": 0.4875,
+      "errors": 1.075,
+      "fec_corrected": 2.975,
+      "fec_uncorrected": 1.4875,
+      "retries": 1.1,
+      "rx_power_dbm": -1.5491785915353566,
+      "temperature_c": 42.124957740989935,
+      "tx_power_dbm": -0.08561879299383521
+    },
+    "window_end": "2026-01-30 16:54:30.257616+00:00",
+    "window_start": "2026-01-30 16:54:30.256435+00:00"
+  }
+]

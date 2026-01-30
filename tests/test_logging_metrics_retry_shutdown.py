@@ -1,6 +1,15 @@
 import json
 import logging
-from waveos.utils import counters, histograms, install_signal_handlers, retry, setup_logging, trigger_shutdown, should_shutdown
+from waveos.utils import (
+    counters,
+    histograms,
+    install_signal_handlers,
+    retry,
+    setup_logging,
+    trigger_shutdown,
+    should_shutdown,
+    reset_shutdown,
+)
 
 
 def test_structured_json_logging() -> None:
@@ -51,3 +60,4 @@ def test_shutdown_flag_set() -> None:
     trigger_shutdown(_on_shutdown)
     assert called["value"] is True
     assert should_shutdown() is True
+    reset_shutdown()

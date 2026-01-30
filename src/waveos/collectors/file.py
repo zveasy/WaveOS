@@ -9,8 +9,15 @@ from waveos.utils import CircuitBreaker, read_csv, read_json, read_jsonl, retry
 _breakers: dict[str, CircuitBreaker] = {}
 
 
-def load_records(path: Path) -> List[Any]:
-    breaker = _breakers.setdefault(str(path), CircuitBreaker())
+def load_records(path: Path, max_failures: int | None = None, reset_after: float | None = None) -> List[Any]:
+    key = str(path)
+    if key not in _breakers:
+        breaker = CircuitBreaker(
+            max_failures=max_failures or 3,
+            reset_after=reset_after or 5.0,
+        )
+        _breakers[key] = breaker
+    breaker = _breakers[key]
     def _load() -> List[Any]:
         if path.suffix == ".json":
             payload = read_json(path)

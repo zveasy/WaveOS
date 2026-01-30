@@ -55,16 +55,23 @@ class TelemetrySample(BaseModel):
     timestamp: datetime
     link_id: str
     port_id: Optional[str] = None
-    errors: int = 0
-    drops: int = 0
-    retries: int = 0
-    fec_corrected: int = 0
-    fec_uncorrected: int = 0
-    ber: Optional[float] = None
-    tx_power_dbm: Optional[float] = None
-    rx_power_dbm: Optional[float] = None
-    temperature_c: Optional[float] = None
-    congestion_pct: Optional[float] = None
+    errors: int = Field(default=0, ge=0)
+    drops: int = Field(default=0, ge=0)
+    retries: int = Field(default=0, ge=0)
+    fec_corrected: int = Field(default=0, ge=0)
+    fec_uncorrected: int = Field(default=0, ge=0)
+    ber: Optional[float] = Field(default=None, ge=0.0)
+    tx_power_dbm: Optional[float] = Field(default=None, ge=-50.0, le=50.0)
+    rx_power_dbm: Optional[float] = Field(default=None, ge=-50.0, le=50.0)
+    temperature_c: Optional[float] = Field(default=None, ge=-50.0, le=150.0)
+    congestion_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    power_kw: Optional[float] = Field(default=None, ge=0.0)
+    energy_kwh: Optional[float] = Field(default=None, ge=0.0)
+    charger_status: Optional[str] = None
+    charger_fault_code: Optional[str] = None
+    battery_soc_pct: Optional[float] = Field(default=None, ge=0.0, le=100.0)
+    voltage_v: Optional[float] = Field(default=None, ge=0.0)
+    current_a: Optional[float] = Field(default=None, ge=0.0)
     meta: Dict[str, Any] = Field(default_factory=dict)
 
 
@@ -74,6 +81,7 @@ class HealthScore(BaseModel):
     score: float = Field(..., ge=0, le=100)
     status: HealthStatus
     drivers: List[str] = Field(default_factory=list)
+    details: Dict[str, Any] = Field(default_factory=dict)
     window_start: datetime
     window_end: datetime
 

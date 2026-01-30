@@ -45,3 +45,14 @@ def read_csv(path: Path) -> List[dict]:
     with path.open("r", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
         return list(reader)
+
+
+def write_csv(path: Path, rows: Iterable[dict], fieldnames: List[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False, dir=path.parent) as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+        temp_name = handle.name
+    Path(temp_name).replace(path)

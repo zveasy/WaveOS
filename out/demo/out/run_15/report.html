@@ -1,0 +1,254 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Wave OS Report</title>
+    <style>
+      body {
+        font-family: "Georgia", "Times New Roman", serif;
+        margin: 24px;
+        background: #f6f5f1;
+        color: #1b1b1b;
+      }
+      header {
+        border-bottom: 2px solid #1b1b1b;
+        margin-bottom: 16px;
+      }
+      .section {
+        margin-top: 24px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        background: #ffffff;
+      }
+      th,
+      td {
+        border: 1px solid #d0cfc7;
+        padding: 8px;
+        text-align: left;
+        font-size: 14px;
+      }
+      th {
+        background: #f0ede6;
+      }
+      .badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 12px;
+        font-size: 12px;
+        font-weight: bold;
+      }
+      .PASS {
+        background: #cfe8d4;
+      }
+      .WARN {
+        background: #f3e3b1;
+      }
+      .FAIL {
+        background: #f2b1b1;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Wave OS Run Report</h1>
+      <p>Health, events, and recommended actions.</p>
+    </header>
+
+    <section class="section">
+      <h2>Health Summary</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Status</th>
+            <th>Score</th>
+            <th>Drivers</th>
+          </tr>
+        </thead>
+        <tbody>
+          
+          <tr>
+            <td>link / link-1</td>
+            <td><span class="badge HealthStatus.PASS">HealthStatus.PASS</span></td>
+            <td>100.0</td>
+            <td></td>
+          </tr>
+          
+          <tr>
+            <td>link / link-2</td>
+            <td><span class="badge HealthStatus.FAIL">HealthStatus.FAIL</span></td>
+            <td>50.0</td>
+            <td>errors_spike, drops_increase</td>
+          </tr>
+          
+          <tr>
+            <td>link / link-3</td>
+            <td><span class="badge HealthStatus.FAIL">HealthStatus.FAIL</span></td>
+            <td>45.0</td>
+            <td>temperature_drift, tx_power_dbm_increase</td>
+          </tr>
+          
+          <tr>
+            <td>link / link-4</td>
+            <td><span class="badge HealthStatus.FAIL">HealthStatus.FAIL</span></td>
+            <td>50.0</td>
+            <td>retries_increase, congestion_pct_spike</td>
+          </tr>
+          
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Recommended Actions</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Entity</th>
+            <th>Rationale</th>
+          </tr>
+        </thead>
+        <tbody>
+          
+          <tr>
+            <td>ActionType.REROUTE</td>
+            <td>link / link-2</td>
+            <td>Link health is FAIL; recommend reroute.</td>
+          </tr>
+          
+          <tr>
+            <td>ActionType.RATE_LIMIT</td>
+            <td>link / link-2</td>
+            <td>Degraded link; reduce load to stabilize.</td>
+          </tr>
+          
+          <tr>
+            <td>ActionType.REROUTE</td>
+            <td>link / link-3</td>
+            <td>Link health is FAIL; recommend reroute.</td>
+          </tr>
+          
+          <tr>
+            <td>ActionType.RATE_LIMIT</td>
+            <td>link / link-3</td>
+            <td>Degraded link; reduce load to stabilize.</td>
+          </tr>
+          
+          <tr>
+            <td>ActionType.POWER_THERMAL_CONSTRAINT</td>
+            <td>link / link-3</td>
+            <td>Temperature drift detected; apply thermal constraints.</td>
+          </tr>
+          
+          <tr>
+            <td>ActionType.REROUTE</td>
+            <td>link / link-4</td>
+            <td>Link health is FAIL; recommend reroute.</td>
+          </tr>
+          
+          <tr>
+            <td>ActionType.RATE_LIMIT</td>
+            <td>link / link-4</td>
+            <td>Degraded link; reduce load to stabilize.</td>
+          </tr>
+          
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <h2>Why These Decisions</h2>
+      <p>
+        Wave OS recommends actions based on health status, drift drivers, and
+        safety constraints. Links with FAIL status receive reroute and rate-limit
+        advice; WARN status prioritizes critical traffic. Temperature drift adds
+        thermal constraints to protect optics.
+      </p>
+      <p>
+        Explainability details are available in <strong>explainability.json</strong>.
+      </p>
+      <p>
+        This report corresponds to run ID <strong>run-f2a4867b</strong>.
+      </p>
+    </section>
+
+    <section class="section">
+      <h2>Events</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Level</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          
+          <tr>
+            <td>2026-01-30 17:17:16.909506+00:00</td>
+            <td>EventLevel.ERROR</td>
+            <td>link link-2 HealthStatus.FAIL drivers=errors_spike,drops_increase</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:17:16.909506+00:00</td>
+            <td>EventLevel.ERROR</td>
+            <td>link link-3 HealthStatus.FAIL drivers=temperature_drift,tx_power_dbm_increase</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:17:16.909506+00:00</td>
+            <td>EventLevel.ERROR</td>
+            <td>link link-4 HealthStatus.FAIL drivers=retries_increase,congestion_pct_spike</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825707+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.REROUTE entity=link:link-2</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825719+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.RATE_LIMIT entity=link:link-2</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825723+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.REROUTE entity=link:link-3</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825725+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.RATE_LIMIT entity=link:link-3</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825728+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.POWER_THERMAL_CONSTRAINT entity=link:link-3</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825730+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.REROUTE entity=link:link-4</td>
+          </tr>
+          
+          <tr>
+            <td>2026-01-30 17:28:07.825733+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.RATE_LIMIT entity=link:link-4</td>
+          </tr>
+          
+        </tbody>
+      </table>
+    </section>
+  </body>
+</html>

@@ -62,3 +62,37 @@ jobs:
             --output-signature "dist/sbom.spdx.json.sig" \
             --output-certificate "dist/sbom.spdx.json.crt" \
             "dist/sbom.spdx.json"
+
+  perf:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      WAVEOS_LICENSE_KEY: WAVEOS-CI-20991231-TEST
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+      - name: Generate demo data
+        run: |
+          waveos sim --out ./out/perf_data
+          waveos baseline --in ./out/perf_data/baseline
+      - name: Load test
+        run: |
+          waveos load-test --out ./out/load --links 200 --samples 200
+      - name: Profile run
+        run: |
+          waveos profile --in ./out/perf_data/run --baseline ./out/perf_data/baseline --out ./out/profile_run --profile ./out/profile.pstats
+      - name: Upload perf artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-artifacts
+          path: |
+            out/load/load_test.json
+            out/profile.pstats
+            out/profile_run/**

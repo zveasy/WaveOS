@@ -1,0 +1,95 @@
+[
+  {
+    "entity_id": "link-1",
+    "entity_type": "link",
+    "metrics": {
+      "battery_soc_pct": 54.41339663168304,
+      "ber": 2.048677595376602e-09,
+      "congestion_pct": 4.861929072391997,
+      "current_a": 149.9767397458901,
+      "drops": 0.5,
+      "energy_kwh": 101.23936539887177,
+      "errors": 1.075,
+      "fec_corrected": 3.15,
+      "fec_uncorrected": 1.575,
+      "power_kw": 81.69860717581707,
+      "retries": 0.475,
+      "rx_power_dbm": -1.5732455808409442,
+      "temperature_c": 42.43063817498337,
+      "tx_power_dbm": 0.1966851677636509,
+      "voltage_v": 540.5869321795037
+    },
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  },
+  {
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "metrics": {
+      "battery_soc_pct": 55.83548921772133,
+      "ber": 4.414932057653053e-09,
+      "congestion_pct": 5.074079665330521,
+      "current_a": 151.35852398479756,
+      "drops": 1.075,
+      "energy_kwh": 105.79067033128099,
+      "errors": 3.0,
+      "fec_corrected": 2.85,
+      "fec_uncorrected": 1.425,
+      "power_kw": 82.97680947058618,
+      "retries": 0.55,
+      "rx_power_dbm": -1.639131879549404,
+      "temperature_c": 43.31004604454881,
+      "tx_power_dbm": 0.023525286172883447,
+      "voltage_v": 554.7556277064566
+    },
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  },
+  {
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "metrics": {
+      "battery_soc_pct": 53.80723152807881,
+      "ber": 2.1126835845015227e-09,
+      "congestion_pct": 4.8228855489697375,
+      "current_a": 154.90025339152092,
+      "drops": 0.5625,
+      "energy_kwh": 114.62840578958794,
+      "errors": 1.0375,
+      "fec_corrected": 3.025,
+      "fec_uncorrected": 1.5125,
+      "power_kw": 90.09437957971623,
+      "retries": 0.5,
+      "rx_power_dbm": -1.4969174488160413,
+      "temperature_c": 53.976595179150436,
+      "tx_power_dbm": -0.051263598407098376,
+      "voltage_v": 583.5122671623183
+    },
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  },
+  {
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "metrics": {
+      "battery_soc_pct": 52.944009245363404,
+      "ber": 1.97073162663951e-09,
+      "charger_faults": 1.0,
+      "congestion_pct": 24.938941436824322,
+      "current_a": 290.2297812759422,
+      "drops": 0.5375,
+      "energy_kwh": 97.52775490947705,
+      "errors": 1.0375,
+      "fec_corrected": 3.05,
+      "fec_uncorrected": 1.525,
+      "power_kw": 87.45511275673024,
+      "retries": 0.975,
+      "rx_power_dbm": -1.4282170848477138,
+      "temperature_c": 42.74316730313443,
+      "tx_power_dbm": -0.16321721498309905,
+      "voltage_v": 544.5339069122826
+    },
+    "window_end": "2026-01-30 17:57:08.785424+00:00",
+    "window_start": "2026-01-30 17:57:08.783723+00:00"
+  }
+]

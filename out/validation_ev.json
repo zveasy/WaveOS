@@ -1,0 +1,37 @@
+{
+  "invalid_records": 0,
+  "missing_required": {
+    "battery_soc_pct": 0,
+    "charger_status": 0,
+    "current_a": 0,
+    "energy_kwh": 0,
+    "power_kw": 0,
+    "voltage_v": 0
+  },
+  "profile": "ev_charger",
+  "sample_errors": [],
+  "stats": {
+    "battery_soc_pct": {
+      "max": 89.67214670636687,
+      "min": 20.24730290159004
+    },
+    "current_a": {
+      "max": 447.26029987834306,
+      "min": 51.0155162480054
+    },
+    "energy_kwh": {
+      "max": 199.08941549492545,
+      "min": 10.103157024333276
+    },
+    "power_kw": {
+      "max": 185.5973629434869,
+      "min": 24.064979400573794
+    },
+    "voltage_v": {
+      "max": 798.5677147222428,
+      "min": 350.0415558777176
+    }
+  },
+  "total_records": 320,
+  "valid_records": 320
+}

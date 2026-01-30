@@ -27,3 +27,13 @@
 - Revert to previous tag and config profile.
 - Validate outputs + audit logs.
 - Document incident and recovery timeline.
+
+## Field Trial Checklist (Microgrid / EV Chargers)
+- Confirm `enforce_actions=false` and `recovery_enabled=false` for initial trials.
+- Verify watchdog integration and reset reason capture.
+- Confirm resource limits are set (CPU/memory) for device class.
+- Validate evidence packs and audit logs are retained and uploaded.
+- Verify telemetry schema includes power/energy/charger health metrics.
+- Confirm alerting routes for WARN/ERROR in staging.
+- Run `waveos validate-telemetry` with profile and review validation report.
+- Execute drills in `docs/FIELD_DRILLS.md`.

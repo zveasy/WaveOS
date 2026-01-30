@@ -1,0 +1,44 @@
+schema_version = 1
+log_format = "json"
+log_level = "INFO"
+metrics_port = 9109
+otel_endpoint = "http://otel-collector:4318/v1/traces"
+waveos_version = "0.1.0"
+policy_version = "policy-1"
+bundle_id = "bundle-ev-charger"
+bundle_active_dir = "/var/lib/waveos/bundles/active"
+bundle_history_dir = "/var/lib/waveos/bundles/history"
+bundle_state_dir = "/var/lib/waveos/bundles/state"
+evidence_pack_enabled = true
+enforce_actions = false
+recovery_enabled = false
+watchdog_enabled = true
+watchdog_path = "/var/run/waveos.watchdog"
+log_spool_path = "/var/log/waveos/spool.log"
+proxy_enabled = false
+proxy_mode = "sanitize"
+drop_privileges_user = "waveos"
+drop_privileges_group = "waveos"
+collector_threads = 2
+max_memory_mb = 1024
+max_cpu_seconds = 180
+idempotent_outputs = true
+retention_days = 30
+alert_min_level = "WARN"
+alert_webhook_url = "https://example.com/webhook"
+alert_webhook_min_level = "WARN"
+alert_slack_webhook_url = "https://hooks.slack.com/services/XXX/YYY/ZZZ"
+alert_slack_min_level = "WARN"
+alert_email_to = "ops@example.com"
+alert_email_min_level = "ERROR"
+alert_email_from = "waveos@example.com"
+alert_email_provider = "ses"
+alert_email_ses_region = "us-east-1"
+secrets_provider = "aws"
+audit_log_path = "/var/log/waveos/audit.jsonl"
+audit_enabled = true
+policy_rules = [
+  { metric = "meta.charger_faults", operator = ">=", threshold = 1, action = "REROUTE", message = "Charger fault detected." },
+  { metric = "meta.current_a", operator = ">", threshold = 180, action = "RATE_LIMIT", message = "Overcurrent detected." },
+  { metric = "meta.voltage_v", operator = ">", threshold = 850, action = "RATE_LIMIT", message = "Overvoltage detected." }
+]

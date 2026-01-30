@@ -30,6 +30,18 @@ def _aggregate(samples: Iterable[TelemetrySample]) -> Dict[str, Dict[str, float]
             buckets[key]["tx_power_dbm"] += sample.tx_power_dbm
         if sample.congestion_pct is not None:
             buckets[key]["congestion_pct"] += sample.congestion_pct
+        if sample.power_kw is not None:
+            buckets[key]["power_kw"] += sample.power_kw
+        if sample.energy_kwh is not None:
+            buckets[key]["energy_kwh"] += sample.energy_kwh
+        if sample.current_a is not None:
+            buckets[key]["current_a"] += sample.current_a
+        if sample.voltage_v is not None:
+            buckets[key]["voltage_v"] += sample.voltage_v
+        if sample.battery_soc_pct is not None:
+            buckets[key]["battery_soc_pct"] += sample.battery_soc_pct
+        if sample.charger_status == "fault" or sample.charger_fault_code:
+            buckets[key]["charger_faults"] += 1.0
     metrics: Dict[str, Dict[str, float]] = {}
     for key, totals in buckets.items():
         count = max(counts[key], 1)
@@ -82,6 +94,14 @@ def score_links(
                     elif delta >= 5:
                         drivers.append("temperature_warning")
                         severity += 20
+                elif metric == "charger_faults":
+                    if run_value >= 1:
+                        drivers.append("charger_fault")
+                        severity += 40
+                elif metric == "current_a":
+                    if base_value > 0 and run_value >= base_value * 1.5:
+                        drivers.append("overcurrent")
+                        severity += 30
                 else:
                     ratio = (run_value + 1e-6) / (base_value + 1e-6)
                     if ratio >= 3:
@@ -104,6 +124,14 @@ def score_links(
                     score=score,
                     status=status,
                     drivers=drivers,
+                    details={
+                        "charger_faults": run_stats.metrics.get("charger_faults", 0.0),
+                        "current_a": run_stats.metrics.get("current_a"),
+                        "power_kw": run_stats.metrics.get("power_kw"),
+                        "voltage_v": run_stats.metrics.get("voltage_v"),
+                        "battery_soc_pct": run_stats.metrics.get("battery_soc_pct"),
+                        "charger_status": "fault" if run_stats.metrics.get("charger_faults", 0.0) >= 1 else "ok",
+                    },
                     window_start=run_stats.window_start,
                     window_end=run_stats.window_end,
                 )

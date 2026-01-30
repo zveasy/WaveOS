@@ -81,6 +81,36 @@
     </section>
 
     <section class="section">
+      <h2>Charger Health</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Entity</th>
+            <th>Status</th>
+            <th>Power (kW)</th>
+            <th>Current (A)</th>
+            <th>Voltage (V)</th>
+            <th>SOC (%)</th>
+            <th>Faults</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for score in health_scores %}
+          <tr>
+            <td>{{ score.entity_type }} / {{ score.entity_id }}</td>
+            <td><span class="badge {{ score.status }}">{{ score.status }}</span></td>
+            <td>{{ score.details.power_kw if score.details is defined else "" }}</td>
+            <td>{{ score.details.current_a if score.details is defined else "" }}</td>
+            <td>{{ score.details.voltage_v if score.details is defined else "" }}</td>
+            <td>{{ score.details.battery_soc_pct if score.details is defined else "" }}</td>
+            <td>{{ score.details.charger_faults if score.details is defined else "" }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
       <h2>Recommended Actions</h2>
       <table>
         <thead>

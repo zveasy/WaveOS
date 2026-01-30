@@ -1,0 +1,74 @@
+[
+  {
+    "entity_id": "link-1",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 1.9704415706797136e-09,
+      "congestion_pct": 4.93682398398728,
+      "drops": 0.4875,
+      "errors": 1.1375,
+      "fec_corrected": 3.05,
+      "fec_uncorrected": 1.525,
+      "retries": 0.4625,
+      "rx_power_dbm": -1.381963531473434,
+      "temperature_c": 41.95067441408094,
+      "tx_power_dbm": 0.08250489019161948
+    },
+    "window_end": "2026-01-30 16:54:30.252566+00:00",
+    "window_start": "2026-01-30 16:54:30.251072+00:00"
+  },
+  {
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 1.990683415527892e-09,
+      "congestion_pct": 5.2107185438122325,
+      "drops": 0.475,
+      "errors": 0.9625,
+      "fec_corrected": 3.125,
+      "fec_uncorrected": 1.5625,
+      "retries": 0.6375,
+      "rx_power_dbm": -1.281189098660169,
+      "temperature_c": 42.78280408916318,
+      "tx_power_dbm": -0.0854061340320956
+    },
+    "window_end": "2026-01-30 16:54:30.252566+00:00",
+    "window_start": "2026-01-30 16:54:30.251072+00:00"
+  },
+  {
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 2.087080583669059e-09,
+      "congestion_pct": 5.111969285295468,
+      "drops": 0.525,
+      "errors": 1.2625,
+      "fec_corrected": 3.425,
+      "fec_uncorrected": 1.7125,
+      "retries": 0.5375,
+      "rx_power_dbm": -1.6570710591362487,
+      "temperature_c": 42.48329463489675,
+      "tx_power_dbm": -0.04250684018477986
+    },
+    "window_end": "2026-01-30 16:54:30.252566+00:00",
+    "window_start": "2026-01-30 16:54:30.251072+00:00"
+  },
+  {
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "metrics": {
+      "ber": 2.0506142808828807e-09,
+      "congestion_pct": 4.635694107031242,
+      "drops": 0.6,
+      "errors": 1.0375,
+      "fec_corrected": 3.375,
+      "fec_uncorrected": 1.6875,
+      "retries": 0.4375,
+      "rx_power_dbm": -1.607547881003902,
+      "temperature_c": 41.626185135860176,
+      "tx_power_dbm": 0.06115387608836986
+    },
+    "window_end": "2026-01-30 16:54:30.252566+00:00",
+    "window_start": "2026-01-30 16:54:30.251072+00:00"
+  }
+]

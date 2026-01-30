@@ -1,0 +1,100 @@
+[
+  {
+    "action": "REROUTE",
+    "drivers": [
+      "errors_spike",
+      "drops_increase"
+    ],
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "rationale": "Link health is FAIL; recommend reroute.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 50.0,
+    "status": "FAIL"
+  },
+  {
+    "action": "RATE_LIMIT",
+    "drivers": [
+      "errors_spike",
+      "drops_increase"
+    ],
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "rationale": "Degraded link; reduce load to stabilize.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 50.0,
+    "status": "FAIL"
+  },
+  {
+    "action": "REROUTE",
+    "drivers": [
+      "temperature_drift",
+      "tx_power_dbm_increase"
+    ],
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "rationale": "Link health is FAIL; recommend reroute.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 45.0,
+    "status": "FAIL"
+  },
+  {
+    "action": "RATE_LIMIT",
+    "drivers": [
+      "temperature_drift",
+      "tx_power_dbm_increase"
+    ],
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "rationale": "Degraded link; reduce load to stabilize.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 45.0,
+    "status": "FAIL"
+  },
+  {
+    "action": "POWER_THERMAL_CONSTRAINT",
+    "drivers": [
+      "temperature_drift",
+      "tx_power_dbm_increase"
+    ],
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "rationale": "Temperature drift detected; apply thermal constraints.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 45.0,
+    "status": "FAIL"
+  },
+  {
+    "action": "REROUTE",
+    "drivers": [
+      "retries_increase",
+      "congestion_pct_spike"
+    ],
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "rationale": "Link health is FAIL; recommend reroute.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 50.0,
+    "status": "FAIL"
+  },
+  {
+    "action": "RATE_LIMIT",
+    "drivers": [
+      "retries_increase",
+      "congestion_pct_spike"
+    ],
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "rationale": "Degraded link; reduce load to stabilize.",
+    "run_id": "run-d49cbc85",
+    "schema_version": 1,
+    "score": 50.0,
+    "status": "FAIL"
+  }
+]

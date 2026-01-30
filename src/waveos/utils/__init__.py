@@ -1,8 +1,8 @@
-from waveos.utils.io import read_csv, read_json, read_jsonl, write_json, write_jsonl
+from waveos.utils.io import read_csv, read_json, read_jsonl, write_csv, write_json, write_jsonl
 from waveos.utils.logging import get_logger, setup_logging
 from waveos.utils.metrics import counters, histograms, start_metrics_server
 from waveos.utils.retry import retry
-from waveos.utils.shutdown import install_signal_handlers, should_shutdown, trigger_shutdown
+from waveos.utils.shutdown import install_signal_handlers, should_shutdown, trigger_shutdown, reset_shutdown
 from waveos.utils.circuit_breaker import CircuitBreaker
 from waveos.utils.config import WaveOSConfig, load_config
 from waveos.utils.config import config_fingerprint
@@ -19,6 +19,12 @@ from waveos.utils.audit import append_audit
 from waveos.utils.rbac import Principal, Role, Permission, authorize
 from waveos.utils.auth import TokenAuth, load_token_roles_from_env, load_token_roles_from_config
 from waveos.utils.time import parse_timestamp, utc_now
+from waveos.utils.spooler import LogSpooler
+from waveos.utils.proxy import ProxyConfig, start_proxy
+from waveos.utils.system_metrics import collect_system_metrics
+from waveos.utils.supervisor import supervise
+from waveos.utils.security import drop_privileges
+from waveos.utils.resource_limits import apply_resource_limits
 
 __all__ = [
     "get_logger",
@@ -28,6 +34,7 @@ __all__ = [
     "install_signal_handlers",
     "should_shutdown",
     "trigger_shutdown",
+    "reset_shutdown",
     "CircuitBreaker",
     "WaveOSConfig",
     "load_config",
@@ -53,9 +60,17 @@ __all__ = [
     "read_csv",
     "read_json",
     "read_jsonl",
+    "write_csv",
     "setup_logging",
     "start_metrics_server",
     "utc_now",
     "write_json",
     "write_jsonl",
+    "LogSpooler",
+    "ProxyConfig",
+    "start_proxy",
+    "collect_system_metrics",
+    "supervise",
+    "drop_privileges",
+    "apply_resource_limits",
 ]

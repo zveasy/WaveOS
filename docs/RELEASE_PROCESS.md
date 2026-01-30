@@ -42,7 +42,15 @@ cosign verify-blob \
 - Release notes are generated automatically from GitHub (labels/commits) and include:
   - artifact list
   - SHA256 checksums
-  - cosign verification instructions
+- cosign verification instructions
+
+## Internal Registry Promotion
+- Build artifacts and publish to internal registry:
+  - `bin/publish_internal.sh` (requires `INTERNAL_PYPI_URL` and `INTERNAL_PYPI_TOKEN`)
+- Promotion process:
+  1. Publish to internal registry.
+  2. Validate in staging via smoke tests.
+  3. Tag production release and publish to public registry.
   - SBOM link (when available)
 
 ## Publishing

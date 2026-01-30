@@ -17,3 +17,29 @@
 
 ## Dashboards
 - Grafana dashboard template: `docs/observability/grafana-dashboard.json`
+
+## Proxy Quick Test
+- Run `bin/proxy_demo.sh` to start metrics + proxy, send a request, and print proxy metrics.
+
+## Perf (CI Artifacts)
+- CI uploads `perf-artifacts` containing:
+  - `out/load/load_test.json`
+  - `out/profile.pstats`
+  - `out/profile_run/**` (report, run_meta, metrics.csv)
+- Download in GitHub Actions: open the `perf` job → Artifacts → `perf-artifacts`.
+
+## Dashboard Validation (Real Runs)
+1. Generate demo data:
+   - `waveos sim --out out/observability`
+2. Build a baseline and run with metrics enabled:
+   - `WAVEOS_METRICS_PORT=9109 waveos baseline --in out/observability/baseline`
+   - `WAVEOS_METRICS_PORT=9109 waveos run --in out/observability/run --baseline out/observability/baseline --out out/observability/report`
+3. While a run is executing, verify metrics are exposed:
+   - `curl http://localhost:9109/metrics | rg "waveos_(telemetry_ingested|normalize_errors|normalize_duration|scoring_duration)"`
+4. Import the Grafana dashboard JSON and confirm panels populate for:
+   - Telemetry ingested
+   - Normalize errors
+   - Normalize duration p95
+   - Scoring duration p95
+   - Proxy connections (if proxy enabled)
+   - Proxy bytes (if proxy enabled)

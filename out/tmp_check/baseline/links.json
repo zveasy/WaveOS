@@ -1,0 +1,26 @@
+[
+  {
+    "capacity_gbps": 400.0,
+    "dst_port": "sw1/2",
+    "id": "link-1",
+    "src_port": "sw1/1"
+  },
+  {
+    "capacity_gbps": 400.0,
+    "dst_port": "sw2/2",
+    "id": "link-2",
+    "src_port": "sw2/1"
+  },
+  {
+    "capacity_gbps": 400.0,
+    "dst_port": "sw3/2",
+    "id": "link-3",
+    "src_port": "sw3/1"
+  },
+  {
+    "capacity_gbps": 400.0,
+    "dst_port": "sw4/2",
+    "id": "link-4",
+    "src_port": "sw4/1"
+  }
+]

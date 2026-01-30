@@ -1,0 +1,66 @@
+{
+  "action_count": 7,
+  "baseline_dir": "out/demo/baseline",
+  "bundle_id": null,
+  "completed_at": "2026-01-30T17:27:37.671163+00:00",
+  "config_fingerprint": "57cd2fd739dc05f8998136680f02e7a1abde4b25b5a586c2f04f867f488472b8",
+  "enforce_actions": false,
+  "event_count": 10,
+  "evidence_pack_enabled": true,
+  "input_dir": "out/demo/run",
+  "model_versions": {
+    "policy_version": "policy-1",
+    "waveos_version": "0.1.0"
+  },
+  "output_dir": "out/demo/out/run_9",
+  "policy_version": "policy-1",
+  "queue_depths": {
+    "telemetry_ingest": 320
+  },
+  "recovery_enabled": false,
+  "run_id": "run-fdc64101",
+  "sample_count": 320,
+  "score_count": 4,
+  "started_at": "2026-01-30T17:27:37.662690+00:00",
+  "system_metrics": {
+    "cpu_load_15m": 12.63134765625,
+    "cpu_load_1m": 15.2958984375,
+    "cpu_load_5m": 12.06884765625,
+    "max_rss_kb": 68091904,
+    "system_cpu_seconds": 0.14199799999999999,
+    "user_cpu_seconds": 0.336385
+  },
+  "task_health": {
+    "normalize": "ok",
+    "policy": "ok",
+    "report": "ok",
+    "score": "ok"
+  },
+  "telemetry_metrics": {
+    "ber": 2.6173812473067193e-09,
+    "congestion_pct": 9.96890750421459,
+    "drops": 0.6343749999999999,
+    "errors": 1.7000000000000002,
+    "fec_corrected": 3.0625,
+    "fec_uncorrected": 1.53125,
+    "retries": 0.65,
+    "rx_power_dbm": -1.627957967459014,
+    "temperature_c": 45.480861677085834,
+    "tx_power_dbm": -0.04771809256268854
+  },
+  "transformations": [
+    {
+      "name": "normalize_records",
+      "schema_version": 1
+    },
+    {
+      "name": "score_links",
+      "schema_version": 1
+    },
+    {
+      "name": "policy_recommendations",
+      "schema_version": 1
+    }
+  ],
+  "waveos_version": "0.1.0"
+}

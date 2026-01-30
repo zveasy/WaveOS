@@ -1,0 +1,65 @@
+[
+  {
+    "action": "REROUTE",
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "parameters": {
+      "priority": "high"
+    },
+    "rationale": "Link health is FAIL; recommend reroute."
+  },
+  {
+    "action": "RATE_LIMIT",
+    "entity_id": "link-2",
+    "entity_type": "link",
+    "parameters": {
+      "limit_pct": 60
+    },
+    "rationale": "Degraded link; reduce load to stabilize."
+  },
+  {
+    "action": "REROUTE",
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "parameters": {
+      "priority": "high"
+    },
+    "rationale": "Link health is FAIL; recommend reroute."
+  },
+  {
+    "action": "RATE_LIMIT",
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "parameters": {
+      "limit_pct": 60
+    },
+    "rationale": "Degraded link; reduce load to stabilize."
+  },
+  {
+    "action": "POWER_THERMAL_CONSTRAINT",
+    "entity_id": "link-3",
+    "entity_type": "link",
+    "parameters": {
+      "max_temp_c": 75
+    },
+    "rationale": "Temperature drift detected; apply thermal constraints."
+  },
+  {
+    "action": "REROUTE",
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "parameters": {
+      "priority": "high"
+    },
+    "rationale": "Link health is FAIL; recommend reroute."
+  },
+  {
+    "action": "RATE_LIMIT",
+    "entity_id": "link-4",
+    "entity_type": "link",
+    "parameters": {
+      "limit_pct": 60
+    },
+    "rationale": "Degraded link; reduce load to stabilize."
+  }
+]
