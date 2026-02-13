@@ -1,5 +1,7 @@
 # Production Readiness
 
+Wave OS production-ready is defined as a **DoD/industrial-grade distributed operating system** that sits above hardware, firmware, and network infrastructure—a real **control-plane OS** for embedded and industrial systems, not a dashboard or monitoring tool. The full capability set (15 areas) and MVP v1/v2/v3 milestones are in **[PRD_DOD_REQUIREMENTS.md](PRD_DOD_REQUIREMENTS.md)**. Implementation status per area is in **[CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md)**.
+
 ## Score
 Current score: 100% (v1 weighted; done=1, partial=0.5, pending=0)
 

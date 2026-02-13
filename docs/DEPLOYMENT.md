@@ -10,6 +10,40 @@
 ## Container (Local)
 Use `docker-compose.yml` for a local container runtime. Mounts the repo and runs a placeholder command.
 
+## Production container image
+Build and run the production image (installs Wave OS from source, non-root user):
+
+```bash
+docker build -t waveos:latest .
+docker run --rm -e WAVEOS_LICENSE_KEY=WAVEOS-PROD-YYYYMMDD-XXX \
+  -v /path/to/data:/data waveos run --in /data/run --baseline /data/baseline --out /data/out
+```
+
+Default entrypoint is `waveos`; override `CMD` for `run`, `sim`, `baseline`, etc. Set `WAVEOS_LICENSE_KEY` or `WAVEOS_LICENSE_PATH` in production.
+
+## Health and readiness (K8s)
+Use `waveos health-check` for exec probes. It exits 0 if license and config are valid.
+
+```yaml
+livenessProbe:
+  exec:
+    command: ["waveos", "health-check"]
+  initialDelaySeconds: 5
+  periodSeconds: 10
+readinessProbe:
+  exec:
+    command: ["waveos", "health-check"]
+  initialDelaySeconds: 2
+  periodSeconds: 5
+```
+
+Ensure `WAVEOS_LICENSE_KEY` (or `WAVEOS_LICENSE_PATH`) is set in the pod environment.
+
+## License (production)
+- `WAVEOS_LICENSE_KEY` — license key (format `WAVEOS-<id>-<suffix>`). Required unless skipped.
+- `WAVEOS_LICENSE_PATH` — path to file containing the key (for secret mounts).
+- `WAVEOS_LICENSE_SKIP=1` — bypass check (local/dev only; do not use in production).
+
 ## Configuration
 - `WAVEOS_LOG_FORMAT=json|text` (default: json)
 - `WAVEOS_LOG_LEVEL=INFO|DEBUG|...`

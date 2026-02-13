@@ -1,2 +1,57 @@
+# Environment
 .env
 .env.example
+.env.local
+*.local
+
+# Build and packaging
+dist/
+build/
+*.egg-info/
+*.egg
+.eggs/
+wheels/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.manifest
+*.spec
+install.sh
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Test and coverage
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+
+# Linting and tools
+.ruff_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Output and runtime
+out/
+*.log
+*.pstats
+spool.log
+
+# IDE and OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Demo and perf artifacts (keep repo clean)
+demo_data/
+out/

@@ -25,17 +25,20 @@ jobs:
       - name: Clean build outputs
         run: rm -rf dist build *.egg-info
       - name: Align package version to tag
+        env:
+          GITHUB_REF_NAME: ${{ github.ref_name }}
         run: |
           python - <<'PY'
+          import os
           import re
           from pathlib import Path
-          tag = "${GITHUB_REF_NAME}"
+          tag = os.environ.get("GITHUB_REF_NAME", "")
           if tag.startswith("v"):
             tag = tag[1:]
           version = tag.replace("-rc", "rc")
           path = Path("pyproject.toml")
           text = path.read_text(encoding="utf-8")
-          text = re.sub(r'^version\\s*=\\s*".*?"', f'version = "{version}"', text, flags=re.M)
+          text = re.sub(r'^version\s*=\s*".*?"', f'version = "{version}"', text, flags=re.M)
           path.write_text(text, encoding="utf-8")
           print(f"Set version to {version}")
           PY

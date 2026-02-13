@@ -24,6 +24,10 @@ jobs:
           python -m pip install -e .[dev]
           python -m pip install build
           python -m pip install pip-audit
+      - name: Lint (Ruff)
+        run: |
+          ruff check src tests
+          ruff format --check src tests
       - name: OTEL import smoke test
         run: |
           python - <<'PY'
@@ -32,11 +36,12 @@ jobs:
           trace.set_tracer_provider(TracerProvider())
           print("OTEL tracing initialized")
           PY
-      - name: Lint (placeholder)
-        run: |
-          python -c "print('lint placeholder')"
       - name: Tests
         run: pytest -q
+      - name: Coverage
+        run: |
+          pytest --cov=src/waveos --cov-report=xml --cov-report=term-missing
+          coverage report --fail-under=45
       - name: Dependency audit
         run: pip-audit --skip-editable
       - name: Build package

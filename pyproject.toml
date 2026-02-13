@@ -22,9 +22,10 @@ waveos = "waveos.cli:main"
 [project.optional-dependencies]
 dev = [
   "pytest>=7.4",
+  "pytest-cov>=4.1",
+  "ruff>=0.4",
   "opentelemetry-api>=1.25",
   "opentelemetry-sdk>=1.25",
-  
 ]
 secrets = [
   "hvac>=2.0",
@@ -44,3 +45,26 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests"]
+exclude = ["src/waveos.egg-info"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.coverage.run]
+source = ["src/waveos"]
+omit = ["*/tests/*", "*/__pycache__/*"]
+
+[tool.coverage.report]
+fail_under = 45
+exclude_lines = ["pragma: no cover", "def __repr__", "raise NotImplementedError"]

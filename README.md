@@ -75,11 +75,24 @@ It explains **what Wave OS is today**, **why it exists**, and **what it becomes*
  * Not tied to a single vendor
  * Not a replacement for existing control planes
  
- Wave OS is **the reasoning layer above them**.
- 
- ---
- 
- ## Architecture (High Level)
+Wave OS is **the reasoning layer above them**.
+
+---
+
+## Production vision: DoD/industrial control-plane OS
+
+Wave OS production-ready is a **DoD/industrial-grade distributed operating system** that sits above hardware, firmware, and network infrastructure and makes *everything* behave as one controlled, upgradeable, secure platform.
+
+- **Not** a dashboard. **Not** a monitoring tool.  
+- **A real control-plane OS** for embedded and industrial systems.
+
+**Core identity:** Wave OS is a secure infrastructure operating system that enables remote software deployment, cross-version RTOS compatibility (e.g. mixed VxWorks systems), real-time orchestration, and autonomous control of energy and embedded networks—turning physical infrastructure into a programmable platform.
+
+The full production-ready capability set is defined in **[docs/PRD_DOD_REQUIREMENTS.md](docs/PRD_DOD_REQUIREMENTS.md)** (15 areas: universal compatibility layer, hardware abstraction, secure software distribution, distributed orchestration, energy scheduler, communications fabric, policy engine, digital twin/simulation, observability, fault isolation/self-healing, cybersecurity, version control for infrastructure, plugin system, multi-tenant, compliance/auditing). Current implementation status per area is in **[docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md)**.
+
+---
+
+## Architecture (High Level)
  
  ```
  Telemetry Sources
@@ -247,10 +260,17 @@ Wave OS supports a small set of runtime environment variables:
  
  ---
  
- ## What We Believe Wave OS Can Become
- 
- Wave OS is designed as a **foundational platform**, not a single product.
- Below is the long-term vision.
+## What We Believe Wave OS Can Become
+
+Wave OS is designed as a **foundational platform**, not a single product. The full roadmap (v1/v2/v3 milestones and 15 production capabilities) is in **[docs/PRD_DOD_REQUIREMENTS.md](docs/PRD_DOD_REQUIREMENTS.md)**. In the full stack:
+
+- **Wave OS** = control-plane OS + compatibility + orchestration + secure deployment  
+- **Harmony Bridge** = anomaly detection + drift detection + system health AI  
+- **QuantEngine** = financial optimization + trading signals + resource allocation  
+
+Together: **Autonomous Infrastructure + Autonomous Capital.**
+
+Below is a condensed long-term vision.
  
  ---
  

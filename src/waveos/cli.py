@@ -447,6 +447,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_health_check(args: argparse.Namespace) -> int:
+    """Exit 0 if license and config are valid. Used for K8s exec readiness/liveness probes."""
+    # License already checked in main(); config loaded and attached as args.config_obj
+    if getattr(args, "config_obj", None) is not None:
+        console.print("ok (license and config valid)")
+    else:
+        console.print("ok (license valid)")
+    return 0
+
+
 def cmd_validate_telemetry(args: argparse.Namespace) -> int:
     result = validate_file(Path(args.input), args.profile, Path(args.output) if args.output else None)
     console.print(result)
@@ -672,6 +682,9 @@ def build_parser() -> argparse.ArgumentParser:
     validate_parser.add_argument("--profile", required=True, choices=["microgrid", "ev_charger"])
     validate_parser.add_argument("--out", dest="output")
     validate_parser.set_defaults(func=cmd_validate_telemetry)
+
+    health_parser = sub.add_parser("health-check", help="Readiness/liveness check (license + config)")
+    health_parser.set_defaults(func=cmd_health_check)
 
     report_parser = sub.add_parser("report", help="Render HTML report")
     report_parser.add_argument("--in", required=True, dest="input")
