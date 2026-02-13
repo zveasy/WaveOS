@@ -442,3 +442,9 @@
 {"timestamp": "2026-02-13T01:35:02.599213+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.REROUTE entity=link/link-4 rationale=Link health is FAIL; recommend reroute."}
 {"timestamp": "2026-02-13T01:35:02.599311+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.RATE_LIMIT entity=link/link-4 rationale=Degraded link; reduce load to stabilize."}
 {"timestamp": "2026-02-13T01:35:02.916944+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-13T01:36:47.795110+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-13T01:36:48.130305+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-13T01:36:48.136114+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.QOS_PRIORITIZATION entity=link/link-1 rationale=Moderate drift detected; prioritize critical traffic."}
+{"timestamp": "2026-02-13T01:36:48.136484+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.REROUTE entity=link/link-4 rationale=Link health is FAIL; recommend reroute."}
+{"timestamp": "2026-02-13T01:36:48.136637+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.RATE_LIMIT entity=link/link-4 rationale=Degraded link; reduce load to stabilize."}
+{"timestamp": "2026-02-13T01:36:48.454141+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
