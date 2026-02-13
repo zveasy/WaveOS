@@ -1,8 +1,28 @@
-version: "3.9"
+# Local development and smoke test of the production image.
+# Usage:
+#   docker compose build && docker compose run --rm waveos health-check
+#   docker compose run --rm -e WAVEOS_LICENSE_KEY=WAVEOS-CI-20991231-TEST waveos run --in /data/run --baseline /data/baseline --out /data/out
+
 services:
   waveos:
-    image: python:3.11-slim
-    working_dir: /app
+    build: .
+    image: waveos:latest
+    environment:
+      - WAVEOS_LOG_FORMAT=json
+      - WAVEOS_LOG_LEVEL=INFO
+      # Set for local/compose; override in production.
+      - WAVEOS_LICENSE_KEY=${WAVEOS_LICENSE_KEY:-WAVEOS-CI-20991231-TEST}
+    # Default: health-check. Override: docker compose run --rm waveos run --in ... --baseline ... --out ...
+    command: ["health-check"]
     volumes:
-      - .:/app
-    command: ["/bin/sh", "-c", "echo 'Wave OS demo container' && sleep 1"]
+      # Optional: mount host data for run/baseline/out
+      - waveos-data:/data
+    healthcheck:
+      test: ["CMD", "waveos", "health-check"]
+      interval: 10s
+      timeout: 5s
+      retries: 2
+      start_period: 5s
+
+volumes:
+  waveos-data: {}

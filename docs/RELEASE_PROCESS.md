@@ -44,6 +44,10 @@ cosign verify-blob \
   - SHA256 checksums
 - cosign verification instructions
 
+## DevSecOps Delivery (No Physical Media)
+- **Pipeline:** [DEVSECOPS_DELIVERY.md](DEVSECOPS_DELIVERY.md) — push signed builds to the external product (registry or distribution package) so sites receive updates without software disks.
+- Workflow: `.github/workflows/devsecops-delivery.yml` (on tag `v*` or manual). Produces signed wheel, SBOM, Docker image (GHCR + optional custom registry), and distribution zip (Release or S3).
+
 ## Internal Registry Promotion
 - Build artifacts and publish to internal registry:
   - `bin/publish_internal.sh` (requires `INTERNAL_PYPI_URL` and `INTERNAL_PYPI_TOKEN`)

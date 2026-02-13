@@ -33,10 +33,12 @@ waveos schedule --in ./demo_data/run --baseline ./demo_data/baseline --out ./out
 ```
 
 ### `waveos bundle`
-Build, install, or rollback a bundle.
+Build, install (optionally from cache or canary), promote canary, or rollback.
 ```
 waveos bundle build --dir ./bundle --policy-version policy-1 --bundle-id bundle-1 --sign
 waveos bundle install --dir ./bundle
+waveos bundle install --from-cache /cache --bundle-id bundle-1 [--canary-percent 10 --canary-dir ./canary]
+waveos bundle promote [--canary-dir ./canary]
 waveos bundle rollback
 ```
 
@@ -86,6 +88,26 @@ WAVEOS_METRICS_PORT=9109 WAVEOS_PROXY_ENABLED=true WAVEOS_PROXY_MODE=http_forwar
 Validate telemetry records against a profile (microgrid or EV charger).
 ```
 waveos validate-telemetry --in ./out/demo/run/telemetry.jsonl --profile microgrid --out ./out/validation.json
+```
+
+### `waveos health-check`
+Readiness/liveness check (license and config). Exit 0 if valid. Use in K8s exec probes.
+```
+waveos health-check
+```
+
+### `waveos validate-config`
+Validate config file and env; print summary (fingerprint, key settings). Exit 0 if valid, 2 if invalid.
+```
+waveos validate-config
+waveos --config /etc/waveos/config.toml validate-config
+```
+
+### `waveos -V` / `waveos --version`
+Print version and exit (no license or config required).
+```
+waveos -V
+waveos --version
 ```
 
 ### CLI Auth

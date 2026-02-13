@@ -39,6 +39,9 @@ alerts = [
 otel = [
   "opentelemetry-exporter-otlp>=1.25"
 ]
+encryption = [
+  "cryptography>=42.0"
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

@@ -1,0 +1,9 @@
+{
+  "name": "nerc-cip",
+  "version": "1",
+  "rules": [
+    {"id": "nerc-soc-min", "type": "soc_limit", "min_soc_percent": 10},
+    {"id": "nerc-temp-max", "type": "temp_limit", "max_temp_celsius": 45},
+    {"id": "nerc-health-gate", "type": "health_gate", "min_health_score": 0.7}
+  ]
+}

@@ -2,8 +2,24 @@
 
 Wave OS production-ready is defined as a **DoD/industrial-grade distributed operating system** that sits above hardware, firmware, and network infrastructure—a real **control-plane OS** for embedded and industrial systems, not a dashboard or monitoring tool. The full capability set (15 areas) and MVP v1/v2/v3 milestones are in **[PRD_DOD_REQUIREMENTS.md](PRD_DOD_REQUIREMENTS.md)**. Implementation status per area is in **[CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md)**.
 
+## Production readiness implementation summary (V1)
+
+The following are implemented and documented for production use:
+
+- **Build & release:** Dockerfile (multi-stage, non-root), docker-compose, CI (lint Ruff, coverage, pip-audit, SBOM, cosign), release workflow with correct version from tag.
+- **Deploy:** K8s manifest (waveos-k8s.yaml) with liveness/readiness probes (`waveos health-check`), Secret/ConfigMap, Job/CronJob; [Deployment](DEPLOYMENT.md) and [Production Checklist](PRODUCTION_CHECKLIST.md).
+- **License:** Enforced at startup; `WAVEOS_LICENSE_KEY` / `WAVEOS_LICENSE_PATH` / `WAVEOS_LICENSE_SKIP`; [SECURITY](SECURITY.md) for supported versions.
+- **Health & validation:** `waveos health-check`, `waveos validate-config`, `waveos -V`/`--version`; clear exit codes (0/1/2/3) documented.
+- **Input validation:** `run` and `report` validate dirs and required files; exit 1 with clear messages when missing.
+- **Security:** No secrets in logs (alert failure logs exception type only); RBAC, audit log, secrets providers (env/Vault/AWS/GCP); threat model, SBOM, signed artifacts.
+- **Observability:** Structured logging (JSON), Prometheus metrics, optional OTEL tracing (optional dependency); [Runbooks](RUNBOOKS.md) for startup, shutdown, probes, recovery.
+- **Alerting:** Webhook/Slack/email with configurable timeout (10s) and retries; no URLs/tokens in failure logs.
+- **Docs:** API reference (all CLI commands), RUNBOOKS, OPERATOR_GUIDE (exit codes), PRODUCTION_CHECKLIST, SECURITY, PRD, Capability Matrix.
+
 ## Score
-Current score: 100% (v1 weighted; done=1, partial=0.5, pending=0)
+- **V1:** 100% (v1 weighted; done=1, partial=0.5, pending=0)
+- **V2:** Implemented: plugin API, device API + stub adapters, compatibility matrix & state registry, scheduler, policy gates, heartbeat, tenant_id, bundle canary/offline config. See [V2_ROADMAP.md](V2_ROADMAP.md) and [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md).
+- **V3:** 100% (in-repo scope): multi-RTOS translation, clearance & attestation, node registry & GitOps, island/grid scheduler, shadow mode, SLA metrics, node health, zero-trust/IDS hooks, compliance reports, tenant quotas, policy templates, marketplace doc. See [V3_ROADMAP.md](V3_ROADMAP.md) and [CAPABILITY_MATRIX.md](CAPABILITY_MATRIX.md).
 
 ## Release Gate Checklist (Minimum for Production)
 - Security review sign-off (threat model + SCA + SBOM + signing verified)

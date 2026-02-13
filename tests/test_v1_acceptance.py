@@ -100,6 +100,10 @@ def test_run_outputs_include_evidence_and_recovery() -> None:
         assert (output_root / "run_meta.json").exists()
         assert (output_root / "metrics.csv").exists()
         assert (output_root / "enforced_actions.jsonl").exists()
+        # Real actuator (SdnThermalActuator) writes to out_dir/actuator when enforce_actions=true
+        actuator_dir = out_dir / "actuator"
+        assert actuator_dir.is_dir(), "enforce_actions should create actuator dir with *_requests.jsonl"
+        assert any(actuator_dir.glob("*_requests.jsonl")), "actuator should write reroute/thermal/rate_limit/qos requests"
         assert (output_root / "recovery_actions.jsonl").exists()
         assert Path(config.watchdog_path).exists()
         assert any(path.name.startswith("evidence_pack_") for path in output_root.iterdir())

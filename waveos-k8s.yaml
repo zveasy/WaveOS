@@ -4,13 +4,11 @@
 #   kubectl apply -f waveos-k8s.yaml
 #
 # Notes:
-# - This deploys Wave OS as a single Deployment with:
-#   - ConfigMap for non-secret config/env
-#   - Secret for auth tokens + optional alert/secrets-provider creds
-#   - Service exposing metrics (Prometheus scrape)
-# - Replace <ORG>/<REPO> image and any placeholders.
+# - Build the image from this repo: docker build -t <REGISTRY>/waveos:<TAG> . and push.
+# - Replace <ORG>/<REPO> (or use your registry path) and image tag below.
+# - Deployment runs a placeholder (sleep) with liveness/readiness via waveos health-check.
+# - Pipeline runs go in the Job / CronJob; set WAVEOS_LICENSE_KEY in the Secret.
 # - If you use Vault/AWS/GCP secrets managers, prefer workload identity/IAM roles over static tokens.
-# - Wave OS does not yet ship a long-running server mode. Replace the command/args once a server/daemon exists.
 
 apiVersion: v1
 kind: Namespace
@@ -73,8 +71,10 @@ metadata:
   namespace: waveos
 type: Opaque
 stringData:
+  # Required for production: set a valid license key (format WAVEOS-<id>-<suffix>).
+  WAVEOS_LICENSE_KEY: "WAVEOS-PROD-YYYYMMDD-REPLACE"
+
   # RBAC tokens (example format from your docs)
-  # IMPORTANT: Replace these values.
   WAVEOS_AUTH_TOKENS: "token1=admin,token2=operator"
 
   # Optional SMTP password if using WAVEOS_ALERT_EMAIL_SMTP_PASSWORD_SECRET=SMTP_PASSWORD
@@ -114,7 +114,7 @@ spec:
         - name: waveos
           image: ghcr.io/<ORG>/<REPO>:v1.0.0
           imagePullPolicy: IfNotPresent
-          # Replace with a real long-running entrypoint when available.
+          # Placeholder: keep pod up; pipeline runs via Job/CronJob. Probes use waveos health-check.
           command: ["/bin/sh", "-c"]
           args: ["sleep infinity"]
           envFrom:
@@ -126,6 +126,18 @@ spec:
             - name: metrics
               containerPort: 9109
               protocol: TCP
+          livenessProbe:
+            exec:
+              command: ["waveos", "health-check"]
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+          readinessProbe:
+            exec:
+              command: ["waveos", "health-check"]
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
           resources:
             requests:
               cpu: "250m"
@@ -143,6 +155,8 @@ spec:
               mountPath: /var/lib/waveos
             - name: waveos-tmp
               mountPath: /tmp
+            - name: waveos-out
+              mountPath: /app/out
             # Optional: mount a config file if Wave OS uses WAVEOS_CONFIG
             # - name: waveos-config-file
             #   mountPath: /etc/waveos
@@ -153,6 +167,8 @@ spec:
           persistentVolumeClaim:
             claimName: waveos-pvc
         - name: waveos-tmp
+          emptyDir: {}
+        - name: waveos-out
           emptyDir: {}
         # Optional: config file mount (uncomment if you add a config.toml key in the ConfigMap)
         # - name: waveos-config-file

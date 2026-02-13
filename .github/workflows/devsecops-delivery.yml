@@ -1,0 +1,260 @@
+# DevSecOps delivery pipeline: build, sign, and push WaveOS to external product (no physical media).
+# Replaces on-site software disks: artifacts are signed and pushed to a registry or release.
+#
+# Triggers:
+#   - Push tag v* (e.g. v1.2.0): full delivery (tests, build, sign, push image, release assets).
+#   - workflow_dispatch: optional delivery (e.g. push to customer registry only).
+#
+# Secrets (optional):
+#   - REGISTRY_URL, REGISTRY_USERNAME, REGISTRY_PASSWORD or GITHUB_TOKEN: push Docker image.
+#   - DELIVERY_S3_BUCKET, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY: upload distribution to S3.
+name: DevSecOps Delivery
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version override (e.g. 1.2.0); default from tag or pyproject.toml"
+        required: false
+      push_image:
+        description: "Push Docker image to registry"
+        required: false
+        default: true
+        type: boolean
+      create_release:
+        description: "Create/update GitHub Release with distribution package"
+        required: false
+        default: true
+        type: boolean
+
+env:
+  WAVEOS_LICENSE_KEY: WAVEOS-CI-20991231-TEST
+
+jobs:
+  test-and-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .[dev]
+      - name: Lint
+        run: ruff check src tests && ruff format --check src tests
+      - name: Tests
+        run: pytest -q
+      - name: Security scan (pip-audit)
+        run: pip-audit --skip-editable
+  build-and-sign:
+    needs: test-and-scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Set version in pyproject
+        id: version
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [ -n "${{ github.ref_name }}" ] && [[ "${{ github.ref_name }}" == v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            V=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          fi
+          sed -i.bak "s/^version = .*/version = \"$V\"/" pyproject.toml && rm -f pyproject.toml.bak
+          echo "version=$V" >> $GITHUB_OUTPUT
+      - name: Build package
+        run: |
+          python -m pip install build
+          python -m build
+      - name: Install Syft
+        uses: anchore/sbom-action/download-syft@v0
+      - name: Generate SBOM
+        run: syft dist/*.whl -o spdx-json=dist/sbom.spdx.json
+      - name: Checksums
+        run: |
+          cd dist && for f in *; do [ -f "$f" ] && sha256sum "$f" >> SHA256SUMS; done && sort -u SHA256SUMS -o SHA256SUMS
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+      - name: Sign artifacts
+        run: |
+          for f in dist/*.whl dist/*.tar.gz; do
+            [ -f "$f" ] && cosign sign-blob --yes --output-signature "${f}.sig" --output-certificate "${f}.crt" "$f"
+          done
+          cosign sign-blob --yes --output-signature dist/sbom.spdx.json.sig --output-certificate dist/sbom.spdx.json.crt dist/sbom.spdx.json
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-dist
+          path: dist/
+
+  build-image:
+    needs: build-and-sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set version in pyproject
+        run: |
+          V="${{ needs.build-and-sign.outputs.version }}"
+          sed -i.bak "s/^version = .*/version = \"$V\"/" pyproject.toml && rm -f pyproject.toml.bak
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Login to GHCR
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.push_image == 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image (GHCR)
+        if: ${{ github.event_name != 'workflow_dispatch' || github.event.inputs.push_image == 'true' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/waveos:${{ needs.build-and-sign.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/waveos:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Login to custom registry
+        if: ${{ secrets.REGISTRY_URL != '' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_image == 'true') }}
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ secrets.REGISTRY_URL }}
+          username: ${{ secrets.REGISTRY_USERNAME }}
+          password: ${{ secrets.REGISTRY_PASSWORD }}
+      - name: Build and push to custom registry
+        if: ${{ secrets.REGISTRY_URL != '' && (github.event_name != 'workflow_dispatch' || github.event.inputs.push_image == 'true') }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ secrets.REGISTRY_URL }}/${{ secrets.REGISTRY_IMAGE || 'waveos' }}:${{ needs.build-and-sign.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  distribution-package:
+    needs: build-and-sign
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-dist
+          path: dist
+      - name: Create distribution zip
+        env:
+          V: ${{ needs.build-and-sign.outputs.version }}
+        run: |
+          mkdir -p "waveos-${V}-distribution"
+          cp -r dist/* "waveos-${V}-distribution/"
+          cat > "waveos-${V}-distribution/INSTALL.md" << 'INSTALL'
+          # WaveOS distribution – install without physical media
+
+          ## Verify signatures (recommended)
+
+          ```bash
+          cosign verify-blob --certificate-identity "https://github.com/OWNER/REPO/.github/workflows/devsecops-delivery.yml@refs/heads/main" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            --signature waveos-VERSION.whl.sig --certificate waveos-VERSION.whl.crt waveos-VERSION.whl
+          ```
+
+          Replace OWNER/REPO and VERSION with your release. For keyless verification with a tag, use `@refs/tags/vVERSION` in certificate-identity.
+
+          ## Install from wheel
+
+          ```bash
+          pip install waveos-*.whl
+          ```
+
+          ## Or use Docker (pull from registry)
+
+          ```bash
+          docker pull ghcr.io/OWNER/waveos:VERSION
+          ```
+
+          See docs/DEVSECOPS_DELIVERY.md for air-gapped and bundle install.
+          INSTALL
+          sed -i "s|OWNER/REPO|${{ github.repository }}|g" "waveos-${V}-distribution/INSTALL.md"
+          sed -i "s|VERSION|${V}|g" "waveos-${V}-distribution/INSTALL.md"
+          zip -r "waveos-${V}-distribution.zip" "waveos-${V}-distribution"
+      - name: Upload distribution zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: distribution-package
+          path: "waveos-*-distribution.zip"
+
+  release:
+    needs: [build-and-sign, distribution-package]
+    # Create GitHub Release only on version tag push (not on manual run; manual run still produces artifacts)
+    if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && !contains(github.ref_name, '-rc') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: signed-dist
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          name: distribution-package
+          path: pkg
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: WaveOS ${{ needs.build-and-sign.outputs.version }}
+          body: |
+            DevSecOps delivery build. Install without physical media – see INSTALL.md in the distribution zip.
+            ### Verify artifacts
+            Use cosign with the workflow identity (see INSTALL.md in the zip).
+          files: |
+            dist/*
+            pkg/*.zip
+          draft: false
+          make_latest: true
+
+  s3-upload:
+    needs: [build-and-sign, distribution-package]
+    if: ${{ secrets.AWS_ACCESS_KEY_ID != '' && secrets.DELIVERY_S3_BUCKET != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distribution-package
+      - name: Upload to S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
+        run: |
+          zipname=$(ls distribution-package/waveos-*-distribution.zip 2>/dev/null | head -1)
+          [ -n "$zipname" ] || zipname=$(ls waveos-*-distribution.zip 2>/dev/null | head -1)
+          aws s3 cp "$zipname" "s3://${{ secrets.DELIVERY_S3_BUCKET }}/waveos/$(basename "$zipname")" --acl bucket-owner-full-control
+          echo "Uploaded: s3://${{ secrets.DELIVERY_S3_BUCKET }}/waveos/$(basename "$zipname")"

@@ -20,6 +20,7 @@ def write_outputs(
     run_meta: Optional[dict] = None,
     run_stats: Optional[Iterable[RunStats]] = None,
     evidence_pack_enabled: bool = True,
+    encrypt_artifacts: bool = False,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     health_payload = [score.model_dump() for score in health_scores]
@@ -41,7 +42,14 @@ def write_outputs(
         explainability_path.unlink(missing_ok=True)
     write_jsonl(events_path, events_payload)
     if run_meta:
-        write_json(run_meta_path, run_meta)
+        if encrypt_artifacts:
+            try:
+                from waveos.utils.encryption import write_json_encrypted
+                write_json_encrypted(run_meta_path, run_meta, fallback_plain=True)
+            except Exception:
+                write_json(run_meta_path, run_meta)
+        else:
+            write_json(run_meta_path, run_meta)
     if run_stats:
         rows = []
         for stat in run_stats:

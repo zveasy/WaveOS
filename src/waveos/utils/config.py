@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, Optional, Literal
+from typing import Any, Dict, List, Optional, Literal
 
 from pydantic import BaseModel, Field
 import hashlib
@@ -40,7 +40,10 @@ class WaveOSConfig(BaseModel):
     bundle_hmac_key_secret: Optional[str] = None
     evidence_pack_enabled: bool = True
     enforce_actions: bool = False
+    actuator_output_dir: Optional[str] = None  # when enforce_actions, real actuator writes here (default: <run out>/actuator)
     recovery_enabled: bool = False
+    recovery_require_approval: bool = True  # DoD: require explicit approval before running recovery commands
+    recovery_approval_path: Optional[str] = None  # path to file containing "approved" (e.g. out/recovery_approved)
     recovery_restart_command: Optional[str] = None
     recovery_degrade_command: Optional[str] = None
     recovery_reboot_command: Optional[str] = None
@@ -74,6 +77,30 @@ class WaveOSConfig(BaseModel):
     max_cpu_seconds: Optional[int] = None
     idempotent_outputs: bool = True
     retention_days: Optional[int] = None
+    # V2: multi-tenant, plugins, device API, scheduler, heartbeat, bundle
+    tenant_id: Optional[str] = None
+    plugin_dirs: List[str] = Field(default_factory=list)
+    device_api_enabled: bool = False
+    scheduler_enabled: bool = False
+    heartbeat_interval_seconds: Optional[int] = None
+    compatibility_matrix_path: Optional[str] = None
+    state_registry_path: Optional[str] = None
+    bundle_canary_percent: Optional[int] = None  # 0-100 canary rollout
+    bundle_offline_cache_path: Optional[str] = None
+    # V3: tenant quotas, policy templates, zero-trust
+    tenant_max_runs_per_hour: Optional[int] = None
+    policy_templates_path: Optional[str] = None
+    secure_boot_enabled: bool = False
+    ids_enabled: bool = False
+    # Commercial: encryption at rest, ingestion auth
+    encrypt_artifacts: bool = False
+    require_ingestion_token: bool = False
+    ingestion_token_path: Optional[str] = None  # path to file containing expected token
+    # mTLS for ingestion / C2 (DoD): paths to client cert, key, and CA for outbound mTLS
+    ingestion_mtls_cert_path: Optional[str] = None
+    ingestion_mtls_key_path: Optional[str] = None
+    ingestion_mtls_ca_path: Optional[str] = None
+    ingestion_url: Optional[str] = None  # optional ingestion endpoint URL
 
 
 def _load_file(path: Path) -> Dict[str, Any]:
@@ -123,7 +150,10 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "bundle_hmac_key_secret": os.getenv("WAVEOS_BUNDLE_HMAC_KEY_SECRET"),
         "evidence_pack_enabled": os.getenv("WAVEOS_EVIDENCE_PACK_ENABLED"),
         "enforce_actions": os.getenv("WAVEOS_ENFORCE_ACTIONS"),
+        "actuator_output_dir": os.getenv("WAVEOS_ACTUATOR_OUTPUT_DIR"),
         "recovery_enabled": os.getenv("WAVEOS_RECOVERY_ENABLED"),
+        "recovery_require_approval": os.getenv("WAVEOS_RECOVERY_REQUIRE_APPROVAL"),
+        "recovery_approval_path": os.getenv("WAVEOS_RECOVERY_APPROVAL_PATH"),
         "recovery_restart_command": os.getenv("WAVEOS_RECOVERY_RESTART_COMMAND"),
         "recovery_degrade_command": os.getenv("WAVEOS_RECOVERY_DEGRADE_COMMAND"),
         "recovery_reboot_command": os.getenv("WAVEOS_RECOVERY_REBOOT_COMMAND"),
@@ -149,6 +179,26 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "max_cpu_seconds": os.getenv("WAVEOS_MAX_CPU_SECONDS"),
         "idempotent_outputs": os.getenv("WAVEOS_IDEMPOTENT_OUTPUTS"),
         "retention_days": os.getenv("WAVEOS_RETENTION_DAYS"),
+        "tenant_id": os.getenv("WAVEOS_TENANT_ID"),
+        "plugin_dirs": os.getenv("WAVEOS_PLUGIN_DIRS"),  # comma-separated
+        "device_api_enabled": os.getenv("WAVEOS_DEVICE_API_ENABLED"),
+        "scheduler_enabled": os.getenv("WAVEOS_SCHEDULER_ENABLED"),
+        "heartbeat_interval_seconds": os.getenv("WAVEOS_HEARTBEAT_INTERVAL_SECONDS"),
+        "compatibility_matrix_path": os.getenv("WAVEOS_COMPATIBILITY_MATRIX_PATH"),
+        "state_registry_path": os.getenv("WAVEOS_STATE_REGISTRY_PATH"),
+        "bundle_canary_percent": os.getenv("WAVEOS_BUNDLE_CANARY_PERCENT"),
+        "bundle_offline_cache_path": os.getenv("WAVEOS_BUNDLE_OFFLINE_CACHE_PATH"),
+        "tenant_max_runs_per_hour": os.getenv("WAVEOS_TENANT_MAX_RUNS_PER_HOUR"),
+        "policy_templates_path": os.getenv("WAVEOS_POLICY_TEMPLATES_PATH"),
+        "secure_boot_enabled": os.getenv("WAVEOS_SECURE_BOOT_ENABLED"),
+        "ids_enabled": os.getenv("WAVEOS_IDS_ENABLED"),
+        "encrypt_artifacts": os.getenv("WAVEOS_ENCRYPT_ARTIFACTS"),
+        "require_ingestion_token": os.getenv("WAVEOS_REQUIRE_INGESTION_TOKEN"),
+        "ingestion_token_path": os.getenv("WAVEOS_INGESTION_TOKEN_PATH"),
+        "ingestion_mtls_cert_path": os.getenv("WAVEOS_INGESTION_MTLS_CERT_PATH"),
+        "ingestion_mtls_key_path": os.getenv("WAVEOS_INGESTION_MTLS_KEY_PATH"),
+        "ingestion_mtls_ca_path": os.getenv("WAVEOS_INGESTION_MTLS_CA_PATH"),
+        "ingestion_url": os.getenv("WAVEOS_INGESTION_URL"),
     }
     env = {key: value for key, value in env.items() if value is not None}
     if "metrics_port" in env:
@@ -182,6 +232,8 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         env["enforce_actions"] = str(env["enforce_actions"]).lower() in {"1", "true", "yes", "on"}
     if "recovery_enabled" in env and env["recovery_enabled"] is not None:
         env["recovery_enabled"] = str(env["recovery_enabled"]).lower() in {"1", "true", "yes", "on"}
+    if "recovery_require_approval" in env and env["recovery_require_approval"] is not None:
+        env["recovery_require_approval"] = str(env["recovery_require_approval"]).lower() in {"1", "true", "yes", "on"}
     if "watchdog_enabled" in env and env["watchdog_enabled"] is not None:
         env["watchdog_enabled"] = str(env["watchdog_enabled"]).lower() in {"1", "true", "yes", "on"}
     if "proxy_enabled" in env and env["proxy_enabled"] is not None:
@@ -214,6 +266,20 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
                 raise ValueError(f"{key} must be an integer") from exc
     if "idempotent_outputs" in env and env["idempotent_outputs"] is not None:
         env["idempotent_outputs"] = str(env["idempotent_outputs"]).lower() in {"1", "true", "yes", "on"}
+    for key in ("device_api_enabled", "scheduler_enabled"):
+        if key in env and env[key] is not None:
+            env[key] = str(env[key]).lower() in {"1", "true", "yes", "on"}
+    for key in ("heartbeat_interval_seconds", "bundle_canary_percent", "tenant_max_runs_per_hour"):
+        if key in env and env[key] is not None:
+            try:
+                env[key] = int(env[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be an integer") from exc
+    for key in ("secure_boot_enabled", "ids_enabled", "encrypt_artifacts", "require_ingestion_token"):
+        if key in env and env[key] is not None:
+            env[key] = str(env[key]).lower() in {"1", "true", "yes", "on"}
+    if "plugin_dirs" in env and env["plugin_dirs"] is not None:
+        env["plugin_dirs"] = [p.strip() for p in str(env["plugin_dirs"]).split(",") if p.strip()]
     payload.update(env)
     config = WaveOSConfig(**payload)
     if config.schema_version != 1:

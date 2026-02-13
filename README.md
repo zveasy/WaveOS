@@ -191,6 +191,17 @@ Outputs are written under `out/` (including `report.html`).
 
 ---
 
+## Production deployment
+
+- **Docker:** `docker build -t waveos:latest .` then run with `WAVEOS_LICENSE_KEY` set. See [Deployment](docs/DEPLOYMENT.md) and `Dockerfile`.
+- **Compose:** `docker compose build && docker compose run --rm waveos health-check` (or override command for `run`/`sim`/etc.).
+- **Kubernetes:** Use `waveos-k8s.yaml`; set image and `WAVEOS_LICENSE_KEY` in the Secret. Liveness/readiness use `waveos health-check`.
+- **Config check:** `waveos validate-config` (and optionally `--config path/to/config.toml`) to verify config before running the pipeline.
+- **Go-live:** See [Production Checklist](docs/PRODUCTION_CHECKLIST.md) for license, secrets, observability, and exit codes.
+- **Version:** `waveos -V` or `waveos --version`. Supported versions: [SECURITY](SECURITY.md).
+
+---
+
 ## Environment
 
 Wave OS supports a small set of runtime environment variables:
@@ -220,7 +231,7 @@ Wave OS supports a small set of runtime environment variables:
 ### Feature-specific env requirements
 
 - **Demo (no extra env required)**
-  - No env vars required.
+  - No env vars required. Optional: copy `.env.example` to `.env` and set `WAVEOS_LICENSE_KEY` for local runs.
 - **Metrics**
   - `WAVEOS_METRICS_PORT`
 - **Tracing**

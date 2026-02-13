@@ -1,5 +1,7 @@
 # Deployment Guide
 
+For a concise go-live list, see [Production Checklist](PRODUCTION_CHECKLIST.md).
+
 ## Local
 1) Install dependencies: `pip install -e .`
 2) Generate demo data: `waveos sim --out ./demo_data`
@@ -20,6 +22,9 @@ docker run --rm -e WAVEOS_LICENSE_KEY=WAVEOS-PROD-YYYYMMDD-XXX \
 ```
 
 Default entrypoint is `waveos`; override `CMD` for `run`, `sim`, `baseline`, etc. Set `WAVEOS_LICENSE_KEY` or `WAVEOS_LICENSE_PATH` in production.
+
+## Config validation
+Run `waveos validate-config` (optionally with `--config path/to/config.toml`) to verify config and env without running the pipeline. Exits 0 if valid, 2 if config is invalid.
 
 ## Health and readiness (K8s)
 Use `waveos health-check` for exec probes. It exits 0 if license and config are valid.

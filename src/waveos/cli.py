@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import time
 import webbrowser
@@ -14,7 +15,7 @@ from uuid import uuid4
 from rich.console import Console
 from rich.table import Table
 
-from waveos.actuators import MockActuator
+from waveos.actuators import MockActuator, SdnThermalActuator
 from waveos.collectors import load_records
 from waveos.licensing import LicenseError, require_license
 from waveos.models import ActionRecommendation, BaselineStats, Event, EventLevel, HealthScore, HealthStatus, RunStats
@@ -26,10 +27,13 @@ from waveos.sim import build_demo_dataset
 from waveos.sim.generator import generate_telemetry, _make_links
 from waveos.validation import validate_file
 from waveos.versioning import current_version
-from waveos.bundle import build_manifest, sign_manifest, write_manifest
-from waveos.update_agent import install_bundle, rollback_bundle
+from waveos.bundle import build_manifest, encrypt_bundle_artifacts, sign_manifest, write_manifest
+from waveos.plugins.registry import list_plugins, get_registry, PluginKind
+from waveos.device_api import get_device_registry, get_driver_instance, DeviceCapability
+from waveos.update_agent import install_bundle, install_bundle_from_cache, promote_canary_bundle, rollback_bundle
 from waveos.recovery import RecoveryOrchestrator, watchdog_ping
 from waveos.utils import (
+    WaveOSConfig,
     get_logger,
     install_signal_handlers,
     read_json,
@@ -76,6 +80,15 @@ def _find_telemetry_files(in_dir: Path) -> List[Path]:
 
 def _load_samples(in_dir: Path, run_id: str | None = None, config: WaveOSConfig | None = None):
     samples = []
+    if config and config.require_ingestion_token:
+        from waveos.collectors.auth import IngestionAuthError, verify_ingestion_token
+        try:
+            verify_ingestion_token(
+                Path(config.ingestion_token_path) if config.ingestion_token_path else None,
+            )
+        except IngestionAuthError as e:
+            logger.error("Ingestion auth failed: %s", e)
+            raise
     files = _find_telemetry_files(in_dir)
     if not files:
         return samples
@@ -210,11 +223,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 3
     in_dir = Path(args.input)
     out_dir = Path(args.output)
+    baseline_dir = Path(args.baseline)
+    if not in_dir.is_dir():
+        console.print(f"Input directory does not exist: {in_dir}")
+        return 1
+    if not baseline_dir.is_dir():
+        console.print(f"Baseline directory does not exist: {baseline_dir}")
+        return 1
+    baseline_path = baseline_dir / "baseline.json"
+    if not baseline_path.exists():
+        console.print(f"Missing baseline.json in {baseline_dir}. Run 'waveos baseline --in <dir>' first.")
+        return 1
     out_dir.mkdir(parents=True, exist_ok=True)
     run_id = f"run-{uuid4().hex[:8]}"
     started_at = utc_now()
-    baseline_dir = Path(args.baseline)
-    baseline_path = baseline_dir / "baseline.json"
     config = getattr(args, "config_obj", None)
     if config:
         run_fp = config_fingerprint(config)
@@ -224,9 +246,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             if baseline_fp and baseline_fp != run_fp:
                 logger.warning("Config drift detected between baseline and run.")
                 write_json(out_dir / "config_drift.json", {"baseline": baseline_fp, "run": run_fp})
-    if not baseline_path.exists():
-        console.print(f"Missing baseline.json in {baseline_dir}")
-        return 1
     samples = _load_samples(in_dir, run_id=run_id, config=config)
     _, run_stats = build_stats(samples)
     baseline_records = read_json(baseline_path)
@@ -237,9 +256,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     policy_rules = config.policy_rules if config else []
     actions = recommend_actions(scores, run_id=run_id, feature_flags=feature_flags, policy_rules=policy_rules)
     events = _build_events(scores, run_id=run_id)
-    MockActuator().apply(actions)
-    events.extend(_build_action_events(actions, run_id=run_id))
     if config and config.enforce_actions:
+        actuator_dir = (Path(config.actuator_output_dir).expanduser() if config.actuator_output_dir else out_dir / "actuator")
+        real_actuator = SdnThermalActuator(output_dir=actuator_dir, run_id=run_id)
+        real_actuator.apply_safe(actions)
         enforced_path = out_dir / "enforced_actions.jsonl"
         write_jsonl(enforced_path, [action.model_dump() for action in actions])
         events.append(
@@ -247,9 +267,12 @@ def cmd_run(args: argparse.Namespace) -> int:
                 timestamp=utc_now(),
                 level=EventLevel.INFO,
                 message="policy_enforced",
-                details={"run_id": run_id, "action_count": len(actions)},
+                details={"run_id": run_id, "action_count": len(actions), "actuator": "sdn_thermal", "actuator_dir": str(actuator_dir)},
             )
         )
+    else:
+        MockActuator().apply(actions)
+    events.extend(_build_action_events(actions, run_id=run_id))
     _send_alerts_if_configured(args, run_id, events)
 
     write_json(out_dir / "run_stats.json", [stat.model_dump() for stat in run_stats])
@@ -295,10 +318,15 @@ def cmd_run(args: argparse.Namespace) -> int:
         },
     }
     if config and config.recovery_enabled:
+        approval_path = Path(config.recovery_approval_path) if config.recovery_approval_path else None
+        env_approved = (os.environ.get("WAVEOS_RECOVERY_APPROVED", "").lower() in {"1", "true", "yes", "on"})
         RecoveryOrchestrator(
             restart_command=config.recovery_restart_command,
             degrade_command=config.recovery_degrade_command,
             reboot_command=config.recovery_reboot_command,
+            require_approval=config.recovery_require_approval,
+            approval_path=approval_path,
+            env_approved=env_approved,
         ).handle_events(events, out_dir)
     if config and config.watchdog_enabled and config.watchdog_path:
         watchdog_ping(Path(config.watchdog_path))
@@ -316,6 +344,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         run_meta=run_meta,
         run_stats=run_stats,
         evidence_pack_enabled=config.evidence_pack_enabled if config else True,
+        encrypt_artifacts=config.encrypt_artifacts if config else False,
     )
     _render_console_summary(scores)
     console.print(f"Report written to {report_path}")
@@ -328,9 +357,17 @@ def cmd_report(args: argparse.Namespace) -> int:
         console.print("Access denied: view_reports required")
         return 3
     out_dir = Path(args.input)
+    if not out_dir.is_dir():
+        console.print(f"Output directory does not exist: {out_dir}")
+        return 1
     health_path = out_dir / "health_summary.json"
     events_path = out_dir / "events.jsonl"
     actions_path = out_dir / "actions.json"
+    missing = [p for p in (health_path, events_path, actions_path) if not p.is_file()]
+    if missing:
+        console.print("Missing required files for report:", ", ".join(str(p) for p in missing))
+        console.print("Run 'waveos run' first to generate outputs.")
+        return 1
     health_payload = read_json(health_path)
     events_payload = read_jsonl(events_path)
     actions_payload = read_json(actions_path)
@@ -447,6 +484,103 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_list_plugins(args: argparse.Namespace) -> int:
+    """List registered plugins (V2)."""
+    from waveos.plugins.registry import discover_entry_points
+    discover_entry_points()
+    kind_filter = getattr(args, "kind", None)
+    kind = PluginKind(kind_filter) if kind_filter else None
+    plugins = list_plugins(kind=kind)
+    if not plugins:
+        console.print("No plugins registered.")
+        return 0
+    for m in plugins:
+        console.print(f"  {m.name}  kind={m.kind.value}  version={m.version}  {m.description or ''}")
+    return 0
+
+
+def cmd_list_devices(args: argparse.Namespace) -> int:
+    """List device drivers and optionally devices (V2)."""
+    reg = get_device_registry()
+    if not reg:
+        console.print("No device drivers registered.")
+        return 0
+    for key in sorted(reg.keys()):
+        console.print(f"  {key}")
+        if getattr(args, "devices", False):
+            try:
+                cap, vendor = key.split(":", 1)
+                cap_enum = DeviceCapability(cap)
+                driver = get_driver_instance(cap_enum, vendor)
+                if driver:
+                    for dev_id in driver.list_devices():
+                        console.print(f"    -> {dev_id}")
+            except Exception:
+                pass
+    return 0
+
+
+def cmd_list_nodes(args: argparse.Namespace) -> int:
+    """List registered orchestration nodes (V3)."""
+    from waveos.orchestration import get_node_registry, load_nodes_from_file
+    nodes_path = getattr(args, "file", None)
+    if nodes_path:
+        load_nodes_from_file(Path(nodes_path))
+    else:
+        default = Path("out/nodes.json")
+        if default.is_file():
+            load_nodes_from_file(default)
+    reg = get_node_registry()
+    if not reg:
+        console.print("No nodes registered.")
+        return 0
+    for nid, rec in sorted(reg.items()):
+        role = getattr(rec, "role", None)
+        role_str = role.value if hasattr(role, "value") else str(rec)
+        console.print(f"  {nid}  role={role_str}")
+    return 0
+
+
+def cmd_compliance_report(args: argparse.Namespace) -> int:
+    """Generate compliance report (V3); optional auditor-ready zip."""
+    from waveos.compliance import build_auditor_package, generate_report, write_report
+    config = getattr(args, "config_obj", None)
+    audit_path = Path(args.audit_path) if getattr(args, "audit_path", None) else None
+    if not audit_path and config and config.audit_log_path:
+        audit_path = Path(config.audit_log_path)
+    report = generate_report(
+        framework=args.framework,
+        run_meta={},
+        audit_path=audit_path,
+    )
+    out_path = Path(args.out)
+    sign_key = getattr(args, "sign_key", None)
+    retention_days = getattr(args, "retention_days", None) or (config.retention_days if config else None)
+    write_report(report, out_path, sign_key=sign_key, retention_days=retention_days)
+    console.print(f"Wrote {args.framework} report to {args.out}")
+    auditor_zip = getattr(args, "auditor_package", None)
+    if auditor_zip:
+        build_auditor_package(
+            report, out_path, Path(auditor_zip),
+            include_audit_path=audit_path,
+            retention_days=retention_days,
+        )
+        console.print(f"Auditor package written to {auditor_zip}")
+    return 0
+
+
+def cmd_validate_config(args: argparse.Namespace) -> int:
+    """Validate config and print summary. Exit 0 if valid, 2 if invalid (handled in main). Used for automation."""
+    config = getattr(args, "config_obj", None)
+    if not config:
+        console.print("No config loaded (using defaults and env)")
+        return 0
+    fp = config_fingerprint(config)
+    console.print(f"config valid (fingerprint={fp[:16]}...)")
+    console.print(f"  log_level={config.log_level} metrics_port={config.metrics_port} audit_enabled={config.audit_enabled}")
+    return 0
+
+
 def cmd_health_check(args: argparse.Namespace) -> int:
     """Exit 0 if license and config are valid. Used for K8s exec readiness/liveness probes."""
     # License already checked in main(); config loaded and attached as args.config_obj
@@ -486,6 +620,18 @@ def cmd_bundle_build(args: argparse.Namespace) -> int:
         feature_flags=feature_flags,
     )
     manifest_path = write_manifest(bundle_dir, manifest)
+    if getattr(args, "encrypt", False):
+        enc_key = get_secret("WAVEOS_ENCRYPTION_KEY") or get_secret("waveos_encryption_key")
+        if not enc_key:
+            console.print("Missing encryption key; set WAVEOS_ENCRYPTION_KEY for --encrypt")
+            return 2
+        if not encrypt_bundle_artifacts(bundle_dir, enc_key):
+            console.print("Failed to encrypt bundle artifacts")
+            return 2
+        import json
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        payload["encrypted_artifacts"] = True
+        manifest_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     if args.sign:
         hmac_key = None
         if config and config.bundle_hmac_key_secret:
@@ -506,14 +652,59 @@ def cmd_bundle_install(args: argparse.Namespace) -> int:
     hmac_key = None
     if config.bundle_hmac_key_secret:
         hmac_key = get_secret(config.bundle_hmac_key_secret, provider=config.secrets_provider)
-    install_bundle(
-        Path(args.dir),
+    active_dir = Path(config.bundle_active_dir)
+    history_dir = Path(config.bundle_history_dir)
+    state_dir = Path(config.bundle_state_dir)
+    canary_percent = getattr(args, "canary_percent", None) or config.bundle_canary_percent
+    canary_dir = Path(args.canary_dir) if getattr(args, "canary_dir", None) else None
+    cache_path = getattr(args, "from_cache", None) or config.bundle_offline_cache_path
+    decryption_key = get_secret("WAVEOS_ENCRYPTION_KEY") or get_secret("waveos_encryption_key")
+    if cache_path and getattr(args, "bundle_id", None):
+        install_bundle_from_cache(
+            Path(cache_path),
+            args.bundle_id,
+            active_dir,
+            history_dir,
+            state_dir,
+            hmac_key=hmac_key,
+            canary_percent=canary_percent,
+            canary_dir=canary_dir,
+            decryption_key=decryption_key,
+        )
+    else:
+        if not getattr(args, "dir", None):
+            console.print("Either --dir <path> or --from-cache <path> and --bundle-id are required")
+            return 1
+        install_bundle(
+            Path(args.dir),
+            active_dir,
+            history_dir,
+            state_dir,
+            hmac_key=hmac_key,
+            canary_percent=canary_percent,
+            canary_dir=canary_dir,
+            decryption_key=decryption_key,
+        )
+    if canary_percent is not None and canary_dir and 0 <= canary_percent < 100:
+        console.print("Bundle installed to canary; run 'waveos bundle promote' to activate.")
+    else:
+        console.print("Bundle installed")
+    return 0
+
+
+def cmd_bundle_promote(args: argparse.Namespace) -> int:
+    config = getattr(args, "config_obj", None)
+    if not config:
+        console.print("Missing configuration")
+        return 2
+    canary_dir = Path(args.canary_dir) if getattr(args, "canary_dir", None) else Path(config.bundle_active_dir).parent / "canary"
+    promote_canary_bundle(
+        canary_dir,
         Path(config.bundle_active_dir),
         Path(config.bundle_history_dir),
         Path(config.bundle_state_dir),
-        hmac_key=hmac_key,
     )
-    console.print("Bundle installed")
+    console.print("Canary promoted to active")
     return 0
 
 
@@ -572,7 +763,7 @@ def _send_alerts_if_configured(args: argparse.Namespace, run_id: str, events: Li
     try:
         route_alerts(alert_events, routes, run_id=run_id)
     except Exception as exc:
-        logger.warning("Alert routing failed: %s", exc)
+        logger.warning("Alert routing failed: %s", type(exc).__name__)
 
 
 def _authorize(args: argparse.Namespace, permission: Permission, action: str | None = None) -> bool:
@@ -618,6 +809,7 @@ def _authorize(args: argparse.Namespace, permission: Permission, action: str | N
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="waveos", description="Wave OS demo CLI")
     parser.add_argument("--config", help="Path to config file (toml/json)")
+    parser.add_argument("-V", "--version", action="store_true", help="Show version and exit")
     parser.add_argument("--role", choices=[role.value for role in Role], default=Role.OPERATOR.value)
     parser.add_argument("--token", help="Auth token for RBAC")
     sub = parser.add_subparsers(dest="command")
@@ -686,6 +878,30 @@ def build_parser() -> argparse.ArgumentParser:
     health_parser = sub.add_parser("health-check", help="Readiness/liveness check (license + config)")
     health_parser.set_defaults(func=cmd_health_check)
 
+    validate_config_parser = sub.add_parser("validate-config", help="Validate config file and env, print summary")
+    validate_config_parser.set_defaults(func=cmd_validate_config)
+
+    list_plugins_parser = sub.add_parser("list-plugins", help="List registered plugins (V2)")
+    list_plugins_parser.add_argument("--kind", choices=[k.value for k in PluginKind])
+    list_plugins_parser.set_defaults(func=cmd_list_plugins)
+
+    list_devices_parser = sub.add_parser("list-devices", help="List device drivers and optional devices (V2)")
+    list_devices_parser.add_argument("--devices", action="store_true", help="List device IDs per driver")
+    list_devices_parser.set_defaults(func=cmd_list_devices)
+
+    list_nodes_parser = sub.add_parser("list-nodes", help="List registered orchestration nodes (V3)")
+    list_nodes_parser.add_argument("--file", help="Path to nodes JSON file (default: from env or out/nodes.json)")
+    list_nodes_parser.set_defaults(func=cmd_list_nodes)
+
+    compliance_report_parser = sub.add_parser("compliance-report", help="Generate compliance report (V3)")
+    compliance_report_parser.add_argument("--framework", choices=["NERC", "SOC2", "DoD"], default="NERC")
+    compliance_report_parser.add_argument("--out", required=True, help="Output JSON path")
+    compliance_report_parser.add_argument("--audit-path", help="Path to audit JSONL")
+    compliance_report_parser.add_argument("--auditor-package", help="Also write auditor-ready zip (report + manifest + optional audit excerpt)")
+    compliance_report_parser.add_argument("--sign-key", help="HMAC key to sign report (or set via secrets)")
+    compliance_report_parser.add_argument("--retention-days", type=int, help="Retention period for report (auditor-ready)")
+    compliance_report_parser.set_defaults(func=cmd_compliance_report)
+
     report_parser = sub.add_parser("report", help="Render HTML report")
     report_parser.add_argument("--in", required=True, dest="input")
     report_parser.add_argument("--open", action="store_true", default=False)
@@ -701,10 +917,18 @@ def build_parser() -> argparse.ArgumentParser:
     bundle_build.add_argument("--app-id")
     bundle_build.add_argument("--environment")
     bundle_build.add_argument("--sign", action="store_true", default=False)
+    bundle_build.add_argument("--encrypt", action="store_true", default=False, help="Encrypt artifact payloads (DoD); requires WAVEOS_ENCRYPTION_KEY")
     bundle_build.set_defaults(func=cmd_bundle_build)
     bundle_install = bundle_sub.add_parser("install", help="Install bundle")
-    bundle_install.add_argument("--dir", required=True)
+    bundle_install.add_argument("--dir", help="Bundle directory (or use --from-cache + --bundle-id)")
+    bundle_install.add_argument("--from-cache", help="Install from offline cache directory (air-gapped)")
+    bundle_install.add_argument("--bundle-id", help="Bundle ID when installing from cache")
+    bundle_install.add_argument("--canary-percent", type=int, help="Install to canary only (0-99); then run promote")
+    bundle_install.add_argument("--canary-dir", help="Directory for canary install (default: <active_dir>/../canary)")
     bundle_install.set_defaults(func=cmd_bundle_install)
+    bundle_promote = bundle_sub.add_parser("promote", help="Promote canary bundle to active")
+    bundle_promote.add_argument("--canary-dir", help="Canary directory to promote")
+    bundle_promote.set_defaults(func=cmd_bundle_promote)
     bundle_rollback = bundle_sub.add_parser("rollback", help="Rollback bundle")
     bundle_rollback.set_defaults(func=cmd_bundle_rollback)
 
@@ -714,6 +938,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if getattr(args, "version", False):
+        console.print(current_version())
+        raise SystemExit(0)
     try:
         require_license()
     except LicenseError as exc:

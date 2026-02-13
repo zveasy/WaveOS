@@ -1,7 +1,37 @@
-.PHONY: help observability-validate
+.PHONY: help lint test coverage docker-build docker-smoke observability-validate release-rc
 
 help:
-	@echo "Wave OS dev skeleton"
+	@echo "Wave OS — development and production targets"
+	@echo ""
+	@echo "  make lint           Run Ruff check and format check"
+	@echo "  make test           Run pytest"
+	@echo "  make coverage       Run pytest with coverage report (fail-under 45%%)"
+	@echo "  make docker-build   Build production image (waveos:latest)"
+	@echo "  make docker-smoke   Build image and run health-check + pipeline smoke"
+	@echo "  make observability-validate  Generate data, run pipeline, sample metrics"
+	@echo "  make release-rc     Tag and push a release candidate (VERSION=x.y.z RC=n)"
+
+lint:
+	ruff check src tests && ruff format --check src tests
+
+test:
+	pytest -q
+
+coverage:
+	pytest --cov=src/waveos --cov-report=term-missing --cov-report=xml
+	coverage report --fail-under=45
+
+docker-build:
+	docker build -t waveos:latest .
+
+docker-smoke: docker-build
+	@echo "--- health-check ---"
+	docker run --rm -e WAVEOS_LICENSE_KEY=$${WAVEOS_LICENSE_KEY:-WAVEOS-CI-20991231-TEST} waveos:latest health-check
+	@echo "--- pipeline smoke ---"
+	docker run --rm -e WAVEOS_LICENSE_KEY=$${WAVEOS_LICENSE_KEY:-WAVEOS-CI-20991231-TEST} waveos:latest sh -c \
+	  "waveos sim --out /data/demo && waveos baseline --in /data/demo/baseline && \
+	   waveos run --in /data/demo/run --baseline /data/demo/baseline --out /data/out && \
+	   test -f /data/out/health_summary.json && test -f /data/out/report.html && echo Pipeline OK"
 
 observability-validate:
 	@out_dir="out/observability"; \

@@ -5,7 +5,7 @@ import hmac
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Optional
 
 from waveos.utils import utc_now
 
@@ -27,6 +27,8 @@ class BundleMetadata:
     identity: dict | None = None
     environment: str | None = None
     feature_flags: dict | None = None
+    attestation: dict | None = None  # V3: supply-chain attestation (provenance, build_id, etc.)
+    encrypted_artifacts: bool = False  # DoD: artifact files are stored as .enc (Fernet)
 
     def to_dict(self) -> dict:
         return {
@@ -38,6 +40,8 @@ class BundleMetadata:
             "identity": self.identity,
             "environment": self.environment,
             "feature_flags": self.feature_flags,
+            "attestation": self.attestation,
+            "encrypted_artifacts": self.encrypted_artifacts,
         }
 
 
@@ -69,8 +73,11 @@ def build_manifest(
     identity: dict | None = None,
     environment: str | None = None,
     feature_flags: dict | None = None,
+    attestation: dict | None = None,
     exclude: Iterable[str] = ("bundle.json", "bundle.sig"),
+    encrypted_artifacts: bool = False,
 ) -> BundleMetadata:
+    """Build bundle manifest; V3: attestation for supply-chain provenance. Set encrypted_artifacts=True when manifest is written after encrypting artifacts."""
     artifacts: List[BundleArtifact] = []
     for path in _iter_files(bundle_dir, exclude):
         artifacts.append(
@@ -89,6 +96,8 @@ def build_manifest(
         identity=identity,
         environment=environment,
         feature_flags=feature_flags,
+        attestation=attestation,
+        encrypted_artifacts=encrypted_artifacts,
     )
 
 
@@ -114,3 +123,57 @@ def verify_manifest(bundle_dir: Path, hmac_key: str) -> bool:
     expected = sig_path.read_text(encoding="utf-8").strip()
     actual = hmac.new(hmac_key.encode("utf-8"), manifest_path.read_bytes(), hashlib.sha256).hexdigest()
     return hmac.compare_digest(expected, actual)
+
+
+def _get_fernet_for_bundle(key: str):
+    try:
+        from cryptography.fernet import Fernet
+        return Fernet(key.encode("utf-8"))
+    except Exception:
+        return None
+
+
+def encrypt_bundle_artifacts(bundle_dir: Path, encryption_key: str) -> bool:
+    """Encrypt artifact files (write .enc, remove plain). Excludes bundle.json and bundle.sig. Returns True if done."""
+    f = _get_fernet_for_bundle(encryption_key)
+    if not f:
+        return False
+    for path in _iter_files(bundle_dir, ("bundle.json", "bundle.sig")):
+        try:
+            raw = path.read_bytes()
+            enc = f.encrypt(raw)
+            path.with_suffix(path.suffix + ".enc").write_bytes(enc)
+            path.unlink()
+        except Exception:
+            return False
+    return True
+
+
+def decrypt_bundle_artifacts(bundle_dir: Path, encryption_key: str) -> bool:
+    """Decrypt *.enc files to plain (remove .enc). Returns True if done."""
+    f = _get_fernet_for_bundle(encryption_key)
+    if not f:
+        return False
+    for path in sorted(bundle_dir.rglob("*.enc")):
+        if not path.is_file():
+            continue
+        try:
+            raw = path.read_bytes()
+            dec = f.decrypt(raw)
+            plain_path = path.with_suffix("")  # e.g. policy.json.enc -> policy.json
+            plain_path.write_bytes(dec)
+            path.unlink()
+        except Exception:
+            return False
+    return True
+
+
+def bundle_has_encrypted_artifacts(bundle_dir: Path) -> bool:
+    manifest_path = bundle_dir / "bundle.json"
+    if not manifest_path.exists():
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        return payload.get("encrypted_artifacts") is True
+    except Exception:
+        return False

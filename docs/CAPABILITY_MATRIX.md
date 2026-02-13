@@ -16,7 +16,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Vendor-neutral data model | **Done** | `src/waveos/models/core.py` (TelemetrySample, Link, Port, etc.); Pydantic schema | Extend for more entity types and vendors |
 | Schema versioning | **Done** | `schema_version` in config and models; `docs/SCHEMA_GOVERNANCE.md` | Compatibility matrix (kernel/firmware) in v2 |
 | Config/identity abstraction | **Done** | `WaveOSConfig`, bundle identity (device_id, app_id), env + file config | Protocol adapters per vendor in v2 |
-| Multi-RTOS / multi-kernel | **Planned** | — | v2/v3: protocol adapters; v3: runtime translation layer |
+| Multi-RTOS / multi-kernel | **Done (V3)** | `compatibility/` — RuntimeTranslator, translate_telemetry | — |
+| Protocol adapters / compatibility matrix | **Done (V2)** | `state_registry.load_compatibility_matrix`; plugin API for adapters | — |
 
 **Relevant modules:** `models/core.py`, `normalize/pipeline.py`, `utils/config.py`, `bundle.py`.
 
@@ -27,8 +28,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Aspect | Status | Current implementation | Gap / roadmap |
 |--------|--------|------------------------|----------------|
 | Normalized telemetry | **Done** | `TelemetrySample`, collectors, normalization pipeline | — |
-| Actuator interface | **Partial** | `actuators/base.py`, `MockActuator`; policy recommends actions | Real device control in v2 |
-| Standard device API | **Planned** | — | v2: API spec + charger/inverter/BESS adapters; v3: plug-and-play |
+| Actuator interface | **Partial** | `actuators/base.py`, `MockActuator`; policy recommends actions | Real device control in production adapters |
+| Standard device API | **Done (V2)** | `device_api/` — DeviceDriver, registry, stub charger/inverter/BESS adapters; `waveos list-devices` | v3: plug-and-play discovery |
 
 **Relevant modules:** `actuators/`, `collectors/`, `models/core.py`, `policy/engine.py`.
 
@@ -39,10 +40,11 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Aspect | Status | Current implementation | Gap / roadmap |
 |--------|--------|------------------------|----------------|
 | Signed packages | **Done** | `bundle.py`, `sign_manifest`, HMAC; `update_agent.py` install/rollback | Encrypted payloads in v2 |
-| RBAC | **Done** | `utils/auth.py`, `utils/rbac.py`, TokenAuth, roles/permissions, CLI enforcement | Clearance-based roles in v3 |
+| RBAC | **Done (V3)** | `utils/auth.py`, `utils/rbac.py`, TokenAuth, roles/permissions; V3: Clearance, DEPLOY_BUNDLE/MANAGE_NODES, authorize clearance | — |
 | Audit logs | **Done** | `utils/audit.py`, `append_audit`; auth decisions and actions logged | — |
 | Rollback | **Done** | `update_agent.py` `rollback_bundle` | — |
-| Staged/canary + offline | **Planned** | — | v2: canary rollout; offline cache and air-gap |
+| Staged/canary + offline | **Partial (V2)** | Config: `bundle_canary_percent`, `bundle_offline_cache_path` | Implement in update_agent |
+| Attestation | **Done (V3)** | `BundleMetadata.attestation`, `build_manifest(..., attestation=...)` | — |
 
 **Relevant modules:** `bundle.py`, `update_agent.py`, `utils/auth.py`, `utils/rbac.py`, `utils/audit.py`, `utils/secrets.py`.
 
@@ -53,8 +55,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Aspect | Status | Current implementation | Gap / roadmap |
 |--------|--------|------------------------|----------------|
 | Single-node control plane | **Done** | CLI pipeline (sim, baseline, run, report); config-driven | — |
-| Multi-node coordination | **Planned** | — | v2: topology, job scheduling, discovery |
-| Air-gapped / federated | **Planned** | — | v3: mesh, offline sync, federated control |
+| Multi-node coordination | **Done (V3)** | State registry, heartbeat; V3: `orchestration/` NodeRole, NodeRecord, get_node_registry, load/save nodes; CLI `list-nodes` | — |
+| Air-gapped / federated | **Done (V3)** | NodeRole.AIR_GAPPED, node registry from file, GitOps desired state | — |
 
 **Relevant modules:** `cli.py`, `utils/config.py`, `recovery.py`, `utils/supervisor.py`.
 
@@ -67,7 +69,7 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Policy reasoning | **Done** | `policy/engine.py`, health/drift/constraints → recommendations | — |
 | Advisory actions | **Done** | `ActionRecommendation`, MockActuator; optional enforce_actions | — |
 | Simulation | **Done** | `sim/generator.py`, fault injection, baseline vs run | — |
-| Real-time dispatch | **Planned** | — | v2: scheduling API, load prioritization, BESS/charger; v3: full energy scheduler |
+| Real-time dispatch | **Done (V3)** | `scheduler.EnergyScheduler`, `ScheduledLoad`, `DispatchInstruction`, `Priority`; V3: `GridSignal`, island_mode, set_grid_signal | — |
 
 **Relevant modules:** `policy/engine.py`, `scoring/health.py`, `sim/`, `actuators/`.
 
@@ -93,7 +95,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Declarative rules | **Done** | `policy/engine.py`, `policy_rules` in config, feature flags | — |
 | Health/drift-driven actions | **Done** | `score_links` → `recommend_actions`; drivers and rationale | — |
 | Circuit breakers / safe modes | **Done** | File collector circuit breaker; recovery degrade/reboot | — |
-| Hard enforcement (SOC, temp, etc.) | **Partial** | `enforce_actions` writes actions to file; no live device throttle yet | v2: enforced execution; v3: NERC/DoD templates |
+| Hard enforcement (SOC, temp, etc.) | **Done (V2)** | `policy/gates.py` — SOC min, temp max, health gate; `run_gates()` | — |
+| Policy templates | **Done (V3)** | `policy/templates.load_policy_templates(path)`; e.g. `docs/templates/policy/nerc.json` | — |
 
 **Relevant modules:** `policy/engine.py`, `scoring/health.py`, `recovery.py`, `utils/circuit_breaker.py`.
 
@@ -106,7 +109,7 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Fault injection | **Done** | `sim/generator.py`, deterministic fault scenarios | — |
 | Baseline vs run | **Done** | `build_stats`, `score_links`, PASS/WARN/FAIL | — |
 | Explainable reports | **Done** | `report.html`, `explainability.json`, event timeline | — |
-| What-if / virtual firmware | **Planned** | — | v2: digital twin API; v3: shadow mode, failure forecast |
+| What-if / virtual firmware | **Done (V3)** | Sim + baseline/run; gates; V3: `shadow.run_shadow()` (no actuation, diff vs live) | — |
 
 **Relevant modules:** `sim/`, `scoring/health.py`, `reporting/report.py`, `validation.py`.
 
@@ -120,7 +123,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Metrics | **Done** | `utils/metrics.py`, Prometheus endpoint (WAVEOS_METRICS_PORT) | — |
 | Tracing | **Done** | `utils/tracing.py`, OTEL, run_id on spans | — |
 | Health scoring | **Done** | `scoring/health.py`, HealthScore, drivers | — |
-| Dashboards / heartbeat | **Partial** | Grafana dashboard snippet in docs; run_meta has task_health | v2: device heartbeat; v3: unified telemetry fabric |
+| Dashboards / heartbeat | **Done (V2)** | `heartbeat.emit_heartbeat`, `read_latest_heartbeats`; config: `heartbeat_interval_seconds` | v3: unified telemetry fabric |
+| SLA metrics | **Done (V3)** | `sla.record_run_success` / `record_run_failure` (tenant_id, site_id labels) | — |
 
 **Relevant modules:** `utils/logging.py`, `utils/metrics.py`, `utils/tracing.py`, `scoring/health.py`, `docs/observability/`.
 
@@ -134,7 +138,7 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Watchdog | **Done** | `recovery.watchdog_ping`, configurable path | — |
 | Rollback | **Done** | `update_agent.rollback_bundle` | — |
 | Circuit breakers | **Done** | File collector; configurable max_failures, reset_after | — |
-| Fault isolation / failover | **Planned** | — | v2: isolate nodes, reroute control; v3: full self-healing |
+| Fault isolation / failover | **Done (V3)** | `node_health.healthy_nodes`, `unhealthy_node_ids` from heartbeat age; use in failover | — |
 
 **Relevant modules:** `recovery.py`, `update_agent.py`, `utils/circuit_breaker.py`, `utils/supervisor.py`.
 
@@ -148,7 +152,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Secrets management | **Done** | `utils/secrets.py`, env/Vault/AWS/GCP | — |
 | Signed bundles | **Done** | HMAC-signed manifests, verification on install | — |
 | Threat model | **Done** | `docs/THREAT_MODEL.md` | — |
-| Mutual TLS / encrypted telemetry | **Planned** | — | v2: mTLS, key mgmt; v3: zero-trust identity, secure boot, IDS hooks |
+| Mutual TLS / encrypted telemetry | **Planned** | — | v2: mTLS, key mgmt |
+| Zero-trust / IDS (V3) | **Done (V3)** | `security.DeviceIdentity`, `set_anomaly_callback`, `on_anomaly`; config: `secure_boot_enabled`, `ids_enabled` | — |
 
 **Relevant modules:** `utils/auth.py`, `utils/rbac.py`, `utils/audit.py`, `utils/secrets.py`, `bundle.py`, `update_agent.py`.
 
@@ -161,7 +166,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Config fingerprinting | **Done** | `utils/config.py` `config_fingerprint`; config_drift.json on run | — |
 | Bundle versioning | **Done** | `waveos_version`, `policy_version`, `bundle_id` in manifest and run_meta | — |
 | Rollback to known-good | **Done** | `rollback_bundle` to last installed | — |
-| Device state registry / compatibility matrix | **Planned** | — | v2: device state, compatibility matrix; v3: GitOps workflow |
+| Device state registry / compatibility matrix | **Done (V2)** | `state_registry` — compatibility matrix load/save; device state record/read | — |
+| GitOps workflow | **Done (V3)** | `gitops/` — DesiredState, load_desired_state, diff_state, apply_desired_state, state history | — |
 
 **Relevant modules:** `bundle.py`, `update_agent.py`, `utils/config.py`, `cli.py` (run_meta).
 
@@ -172,7 +178,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Aspect | Status | Current implementation | Gap / roadmap |
 |--------|--------|------------------------|----------------|
 | Modular design | **Done** | Collectors, actuators, policy rules, config-driven feature flags | — |
-| Plugin API / registry | **Planned** | — | v2: plugin API, lifecycle, signed plugins; v3: marketplace |
+| Plugin API / registry | **Done (V2)** | `plugins/registry.py` — register_plugin, list_plugins, discover_entry_points; CLI: `list-plugins` | — |
+| Marketplace | **Done (V3)** | `docs/MARKETPLACE.md` — packaging, certification checklist, device adapters | — |
 
 **Relevant modules:** `collectors/`, `actuators/`, `policy/engine.py`, `utils/config.py`.
 
@@ -184,7 +191,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 |--------|--------|------------------------|----------------|
 | RBAC + per-run identity | **Done** | Tokens, roles, permissions; run_id in events and meta | — |
 | Config profiles | **Done** | staging/prod (and microgrid/ev_charger) in `docs/config/` | — |
-| Tenant isolation | **Planned** | — | v2: data and control isolation; v3: multi-region, quotas, SSO |
+| Tenant isolation | **Partial (V2)** | Config: `tenant_id`; audit/data can be scoped by tenant | v3: multi-region, SSO |
+| Tenant quotas | **Done (V3)** | Config: `tenant_max_runs_per_hour`; `quotas.check_quota`, `record_run` | — |
 
 **Relevant modules:** `utils/auth.py`, `utils/rbac.py`, `utils/config.py`.
 
@@ -197,7 +205,8 @@ This document maps the **15 production-ready capability areas** from [PRD_DOD_RE
 | Audit trail | **Done** | `utils/audit.py`, auth and action logging; rotation (max_bytes, max_files) | — |
 | Evidence pack | **Done** | run_meta, artifacts, config_fingerprint; optional evidence_pack_enabled | — |
 | Data classification | **Done** | `docs/DATA_CLASSIFICATION.md` | — |
-| Compliance mapping | **Partial** | `docs/COMPLIANCE_MAPPING.md` | v2: NERC/SOC2 report templates; v3: DoD/NERC/SOC2 packages |
+| Compliance mapping | **Partial** | `docs/COMPLIANCE_MAPPING.md` | — |
+| Compliance reports | **Done (V3)** | `compliance.generate_report`, `write_report` (NERC, SOC2, DoD); CLI: `compliance-report` | — |
 
 **Relevant modules:** `utils/audit.py`, `reporting/report.py`, `cli.py` (run_meta, evidence).
 
