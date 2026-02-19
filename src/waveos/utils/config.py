@@ -41,6 +41,7 @@ class WaveOSConfig(BaseModel):
     evidence_pack_enabled: bool = True
     enforce_actions: bool = False
     actuator_output_dir: Optional[str] = None  # when enforce_actions, real actuator writes here (default: <run out>/actuator)
+    actuator_class: Optional[str] = None  # optional "module:ClassName" to use instead of SdnThermalActuator
     recovery_enabled: bool = False
     recovery_require_approval: bool = True  # DoD: require explicit approval before running recovery commands
     recovery_approval_path: Optional[str] = None  # path to file containing "approved" (e.g. out/recovery_approved)
@@ -77,6 +78,7 @@ class WaveOSConfig(BaseModel):
     max_cpu_seconds: Optional[int] = None
     idempotent_outputs: bool = True
     retention_days: Optional[int] = None
+    compliance_report_sign_key: Optional[str] = None  # secret name or key for signing compliance reports
     # V2: multi-tenant, plugins, device API, scheduler, heartbeat, bundle
     tenant_id: Optional[str] = None
     plugin_dirs: List[str] = Field(default_factory=list)
@@ -151,6 +153,7 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "evidence_pack_enabled": os.getenv("WAVEOS_EVIDENCE_PACK_ENABLED"),
         "enforce_actions": os.getenv("WAVEOS_ENFORCE_ACTIONS"),
         "actuator_output_dir": os.getenv("WAVEOS_ACTUATOR_OUTPUT_DIR"),
+        "actuator_class": os.getenv("WAVEOS_ACTUATOR_CLASS"),
         "recovery_enabled": os.getenv("WAVEOS_RECOVERY_ENABLED"),
         "recovery_require_approval": os.getenv("WAVEOS_RECOVERY_REQUIRE_APPROVAL"),
         "recovery_approval_path": os.getenv("WAVEOS_RECOVERY_APPROVAL_PATH"),
@@ -179,6 +182,7 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "max_cpu_seconds": os.getenv("WAVEOS_MAX_CPU_SECONDS"),
         "idempotent_outputs": os.getenv("WAVEOS_IDEMPOTENT_OUTPUTS"),
         "retention_days": os.getenv("WAVEOS_RETENTION_DAYS"),
+        "compliance_report_sign_key": os.getenv("WAVEOS_COMPLIANCE_REPORT_SIGN_KEY"),
         "tenant_id": os.getenv("WAVEOS_TENANT_ID"),
         "plugin_dirs": os.getenv("WAVEOS_PLUGIN_DIRS"),  # comma-separated
         "device_api_enabled": os.getenv("WAVEOS_DEVICE_API_ENABLED"),

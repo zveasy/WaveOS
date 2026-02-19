@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from waveos.actuators import MockActuator, SdnThermalActuator
-from waveos.collectors import load_records
+from waveos.collectors import load_records, load_records_from_url
 from waveos.licensing import LicenseError, require_license
 from waveos.models import ActionRecommendation, BaselineStats, Event, EventLevel, HealthScore, HealthStatus, RunStats
 from waveos.normalize import normalize_records
@@ -118,6 +118,23 @@ def _load_samples(in_dir: Path, run_id: str | None = None, config: WaveOSConfig 
             records = future.result()
             samples.extend(normalize_records(records, run_id=run_id))
     return samples
+
+
+def _get_actuator(config, actuator_dir: Path, run_id: str):
+    """Return actuator instance: custom class from config.actuator_class or SdnThermalActuator."""
+    if config and getattr(config, "actuator_class", None):
+        spec = config.actuator_class.strip()
+        if ":" in spec:
+            mod_name, cls_name = spec.rsplit(":", 1)
+            import importlib
+            mod = importlib.import_module(mod_name)
+            cls = getattr(mod, cls_name)
+            try:
+                return cls(output_dir=actuator_dir, run_id=run_id)
+            except TypeError:
+                return cls()
+        logger.warning("actuator_class must be 'module:ClassName'; using SdnThermalActuator")
+    return SdnThermalActuator(output_dir=actuator_dir, run_id=run_id)
 
 
 def _baseline_map(records: Iterable[dict]) -> Dict[str, BaselineStats]:
@@ -224,7 +241,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     in_dir = Path(args.input)
     out_dir = Path(args.output)
     baseline_dir = Path(args.baseline)
-    if not in_dir.is_dir():
+    input_is_url = str(args.input).startswith("http://") or str(args.input).startswith("https://")
+    if not input_is_url and not in_dir.is_dir():
         console.print(f"Input directory does not exist: {in_dir}")
         return 1
     if not baseline_dir.is_dir():
@@ -246,7 +264,14 @@ def cmd_run(args: argparse.Namespace) -> int:
             if baseline_fp and baseline_fp != run_fp:
                 logger.warning("Config drift detected between baseline and run.")
                 write_json(out_dir / "config_drift.json", {"baseline": baseline_fp, "run": run_fp})
-    samples = _load_samples(in_dir, run_id=run_id, config=config)
+    if input_is_url:
+        records = load_records_from_url(
+            args.input,
+            timeout=getattr(config, "ingestion_http_timeout", 10.0) if config else 10.0,
+        )
+        samples = list(normalize_records(records, run_id=run_id))
+    else:
+        samples = _load_samples(in_dir, run_id=run_id, config=config)
     _, run_stats = build_stats(samples)
     baseline_records = read_json(baseline_path)
     baseline_map = _baseline_map(baseline_records)
@@ -258,7 +283,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     events = _build_events(scores, run_id=run_id)
     if config and config.enforce_actions:
         actuator_dir = (Path(config.actuator_output_dir).expanduser() if config.actuator_output_dir else out_dir / "actuator")
-        real_actuator = SdnThermalActuator(output_dir=actuator_dir, run_id=run_id)
+        real_actuator = _get_actuator(config, actuator_dir, run_id)
+        actuator_name = getattr(real_actuator, "name", real_actuator.__class__.__name__)
         real_actuator.apply_safe(actions)
         enforced_path = out_dir / "enforced_actions.jsonl"
         write_jsonl(enforced_path, [action.model_dump() for action in actions])
@@ -267,7 +293,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                 timestamp=utc_now(),
                 level=EventLevel.INFO,
                 message="policy_enforced",
-                details={"run_id": run_id, "action_count": len(actions), "actuator": "sdn_thermal", "actuator_dir": str(actuator_dir)},
+                details={"run_id": run_id, "action_count": len(actions), "actuator": actuator_name, "actuator_dir": str(actuator_dir)},
             )
         )
     else:
@@ -555,6 +581,10 @@ def cmd_compliance_report(args: argparse.Namespace) -> int:
     )
     out_path = Path(args.out)
     sign_key = getattr(args, "sign_key", None)
+    if sign_key is None and config and getattr(config, "compliance_report_sign_key", None):
+        sign_key = get_secret(config.compliance_report_sign_key, provider=config.secrets_provider) if config.secrets_provider else None
+    if sign_key is None and config and config.bundle_hmac_key_secret:
+        sign_key = get_secret(config.bundle_hmac_key_secret, provider=config.secrets_provider)  # fallback: reuse HMAC key
     retention_days = getattr(args, "retention_days", None) or (config.retention_days if config else None)
     write_report(report, out_path, sign_key=sign_key, retention_days=retention_days)
     console.print(f"Wrote {args.framework} report to {args.out}")

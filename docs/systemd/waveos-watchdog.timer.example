@@ -1,0 +1,15 @@
+# Timer: run WaveOS every 60s and run watchdog check every 120s.
+# Copy to /etc/systemd/system/ and enable:
+#   systemctl enable waveos.timer waveos-watchdog.timer
+#   systemctl start waveos.timer waveos-watchdog.timer
+
+[Unit]
+Description=Run WaveOS pipeline every 60s
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,14 @@
+# Timer: run WaveOS pipeline every 60 seconds.
+# Copy to /etc/systemd/system/waveos.timer and enable:
+#   systemctl enable waveos.timer && systemctl start waveos.timer
+
+[Unit]
+Description=Run WaveOS pipeline every 60s
+
+[Timer]
+OnBootSec=30
+OnUnitActiveSec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,16 @@
+# Example systemd unit for WaveOS watchdog monitor.
+# Copy to /etc/systemd/system/waveos-watchdog.service and enable the timer.
+# If the watchdog file is not updated within STALE_SECONDS, the monitor writes
+# reset reason and restarts waveos.service.
+
+[Unit]
+Description=WaveOS watchdog monitor
+After=waveos.service
+
+[Service]
+Type=oneshot
+Environment=WAVEOS_WATCHDOG_PATH=/var/lib/waveos/out/watchdog.txt
+Environment=WAVEOS_WATCHDOG_STALE_SECONDS=120
+Environment=WAVEOS_SERVICE_NAME=waveos
+Environment=WAVEOS_RESET_REASON_PATH=/var/run/waveos-reset-reason
+ExecStart=/path/to/WaveOS/scripts/waveos-watchdog-monitor.sh

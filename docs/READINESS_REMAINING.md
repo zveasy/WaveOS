@@ -75,3 +75,12 @@ Quick start and evaluation path exist ([QUICKSTART_EVALUATION](QUICKSTART_EVALUA
 - **Commercial (legal/support):** EULA and support SLA; optional license server and GTM materials.
 
 Use this list to prioritize by first customer or first deployment; the rest can follow in phases.
+
+---
+
+## Hardware and physical integration (the "body")
+
+WaveOS is production-ready **as a software control-plane**. To make it real in the physical world (microgrid, chargers, DoD embedded), you need hardware integration, live telemetry, real actuator execution, and a testbed. See:
+
+- **[HARDWARE_INTEGRATION_KIT.md](HARDWARE_INTEGRATION_KIT.md)** — Edge node requirements, supported protocols (Modbus, OCPP, SNMP, REST), required ports (Ethernet, RS-485, CAN), telemetry collector/adapter layer, actuator→physical mapping, microgrid testbed, supervisor contract, fleet model, edge install and evidence.
+- **[HARDWARE_SHOPPING_LIST.md](HARDWARE_SHOPPING_LIST.md)** — Three tiers (~$2k / ~$10k / ~$50k) of hardware to prove WaveOS in a real closed-loop demo; what to buy and what not to buy yet.

@@ -1,0 +1,17 @@
+# Example systemd unit for WaveOS run (single shot).
+# Copy to /etc/systemd/system/waveos.service and adjust.
+# Run via a timer (see waveos-watchdog.timer.example) or a loop wrapper.
+
+[Unit]
+Description=WaveOS control-plane run
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/waveos run --in /var/lib/waveos/input --baseline /var/lib/waveos/baseline --out /var/lib/waveos/out
+Environment=WAVEOS_CONFIG=/etc/waveos/config.toml
+EnvironmentFile=-/etc/waveos/secrets.env
+
+[Install]
+WantedBy=multi-user.target
