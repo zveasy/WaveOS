@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, List
 
-from waveos.utils import CircuitBreaker, read_csv, read_json, read_jsonl, retry
+from waveos.utils import CircuitBreaker, get_logger, read_csv, read_json, read_jsonl, retry
+
+logger = get_logger("waveos.collectors.file")
 
 
 _breakers: dict[str, CircuitBreaker] = {}
@@ -36,6 +38,7 @@ def load_records(path: Path, max_failures: int | None = None, reset_after: float
         result = retry(_load)
         breaker.record_success()
         return result
-    except Exception:
+    except Exception as exc:
         breaker.record_failure()
+        logger.debug("File collector failed for %s: %s", path, type(exc).__name__)
         raise

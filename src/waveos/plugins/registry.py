@@ -86,7 +86,8 @@ def discover_entry_points() -> None:
     try:
         from importlib import metadata
         eps = metadata.entry_points(group="waveos.plugins")
-    except Exception:
+    except (ImportError, AttributeError) as exc:
+        logger.debug("Plugin entry points not available: %s", type(exc).__name__)
         return
     for ep in eps:
         try:

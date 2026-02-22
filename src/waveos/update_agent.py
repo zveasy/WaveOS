@@ -16,6 +16,10 @@ from waveos.utils import get_logger, utc_now
 logger = get_logger("waveos.update_agent")
 
 
+def _change_log_path(state_dir: Path) -> Path:
+    return state_dir / "deployment_changes.jsonl"
+
+
 @dataclass
 class BundleState:
     active_bundle_id: Optional[str] = None
@@ -56,10 +60,23 @@ def _install_to_dir(
     target_dir: Path,
     hmac_key: Optional[str] = None,
     decryption_key: Optional[str] = None,
+    allowed_install_root: Optional[Path] = None,
 ) -> Optional[str]:
-    """Copy bundle to target_dir; verify if hmac_key set; decrypt artifacts if encrypted and key given. Returns bundle_id."""
+    """Copy bundle to target_dir; verify manifest if hmac_key set; decrypt artifacts if encrypted and key given. Returns bundle_id.
+    If allowed_install_root is set, target_dir must resolve to a path under it (path traversal protection).
+    """
     if hmac_key and not verify_manifest(bundle_dir, hmac_key):
-        raise ValueError("Bundle signature verification failed")
+        raise ValueError("Bundle manifest signature verification failed (wrong or missing HMAC key)")
+    target_resolved = target_dir.resolve()
+    if allowed_install_root is not None:
+        root_resolved = allowed_install_root.resolve()
+        try:
+            target_resolved.relative_to(root_resolved)
+        except ValueError:
+            raise ValueError(
+                f"Bundle install target {target_resolved} is not under allowed root {root_resolved}. "
+                "Refusing to install to avoid overwriting system paths."
+            )
     if target_dir.exists():
         shutil.rmtree(target_dir)
     shutil.copytree(bundle_dir, target_dir)
@@ -94,10 +111,16 @@ def install_bundle(
     )
     if use_canary:
         canary_dir.mkdir(parents=True, exist_ok=True)
-        bundle_id = _install_to_dir(bundle_dir, canary_dir, hmac_key, decryption_key)
+        root = active_dir.resolve().parent
+        bundle_id = _install_to_dir(bundle_dir, canary_dir, hmac_key, decryption_key, allowed_install_root=root)
         state = load_state(state_dir)
         state.canary_bundle_id = bundle_id
         save_state(state_dir, state)
+        try:
+            from waveos.change_log import append_change_log
+            append_change_log(_change_log_path(state_dir), "install_canary", bundle_id=bundle_id)
+        except Exception:
+            pass
         logger.info("Bundle %s installed to canary; run promote to activate", bundle_id)
         return
     if active_dir.exists():
@@ -106,9 +129,16 @@ def install_bundle(
         if archived.exists():
             shutil.rmtree(archived)
         shutil.move(str(active_dir), str(archived))
-    bundle_id = _install_to_dir(bundle_dir, active_dir, hmac_key, decryption_key)
+    root = active_dir.resolve().parent
+    bundle_id = _install_to_dir(bundle_dir, active_dir, hmac_key, decryption_key, allowed_install_root=root)
     state = BundleState(active_bundle_id=bundle_id, last_updated_at=utc_now().isoformat())
     save_state(state_dir, state)
+    try:
+        from waveos.change_log import append_change_log
+        append_change_log(_change_log_path(state_dir), "install", bundle_id=bundle_id)
+    except Exception:
+        pass
+    logger.info("Bundle %s installed to active", bundle_id)
 
 
 def install_bundle_from_cache(
@@ -134,7 +164,8 @@ def install_bundle_from_cache(
                         if payload.get("bundle_id") == bundle_id:
                             bundle_dir = sub
                             break
-                    except Exception:
+                    except (OSError, json.JSONDecodeError) as exc:
+                        logger.debug("Skip cache entry %s: %s", sub, type(exc).__name__)
                         continue
     if not bundle_dir.is_dir():
         raise ValueError(f"Bundle {bundle_id} not found in cache {cache_dir}")
@@ -174,6 +205,11 @@ def promote_canary_bundle(
     state.last_updated_at = utc_now().isoformat()
     state.canary_bundle_id = None
     save_state(state_dir, state)
+    try:
+        from waveos.change_log import append_change_log
+        append_change_log(_change_log_path(state_dir), "promote", bundle_id=bundle_id)
+    except Exception:
+        pass
     logger.info("Canary promoted to active: %s", bundle_id)
 
 
@@ -194,3 +230,9 @@ def rollback_bundle(active_dir: Path, history_dir: Path, state_dir: Path) -> Non
         bundle_id = payload.get("bundle_id")
     state = BundleState(active_bundle_id=bundle_id, last_updated_at=utc_now().isoformat())
     save_state(state_dir, state)
+    try:
+        from waveos.change_log import append_change_log
+        append_change_log(_change_log_path(state_dir), "rollback", bundle_id=bundle_id)
+    except Exception:
+        pass
+    logger.info("Rolled back to bundle %s", bundle_id)

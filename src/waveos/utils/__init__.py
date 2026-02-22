@@ -1,6 +1,7 @@
 from waveos.utils.io import read_csv, read_json, read_jsonl, write_csv, write_json, write_jsonl
 from waveos.utils.logging import get_logger, setup_logging
 from waveos.utils.metrics import counters, histograms, start_metrics_server
+from waveos.utils.health_server import start_health_server
 from waveos.utils.retry import retry
 from waveos.utils.shutdown import install_signal_handlers, should_shutdown, trigger_shutdown, reset_shutdown
 from waveos.utils.circuit_breaker import CircuitBreaker
@@ -14,6 +15,7 @@ from waveos.utils.secrets import (
     get_secret_from_aws,
     get_secret_from_gcp,
     get_secret_from_vault,
+    set_strict_secrets,
 )
 from waveos.utils.audit import append_audit
 from waveos.utils.rbac import Principal, Role, Permission, authorize
@@ -48,6 +50,7 @@ __all__ = [
     "get_secret_from_vault",
     "get_secret_from_aws",
     "get_secret_from_gcp",
+    "set_strict_secrets",
     "append_audit",
     "Principal",
     "Role",
@@ -63,6 +66,7 @@ __all__ = [
     "write_csv",
     "setup_logging",
     "start_metrics_server",
+    "start_health_server",
     "utc_now",
     "write_json",
     "write_jsonl",

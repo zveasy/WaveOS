@@ -84,6 +84,32 @@ actuator_class = "my_package.waveos_actuator:ChargerActuator"
 
 The CLI uses **`SdnThermalActuator`** when `enforce_actions=true` and **`MockActuator`** otherwise. To use a custom actuator class instead, extend the CLI or add a plugin to instantiate it when `enforce_actions=true`.
 
+## Actuation reliability and safety (built-in)
+
+When **`enforce_actions=true`**, the CLI builds a **chain**:
+
+1. **Base actuator** — Either `SdnThermalActuator`, an **adapter-based actuator** (when `actuation_use_adapters=true`), or a custom class from `actuator_class`.
+2. **Safety interlock** (optional) — If any safety config is set, actions are filtered by:
+   - **Hard limits**: `actuation_safety_max_temp_c`, `actuation_safety_min_soc_pct`, `actuation_safety_max_current_a` (requires a state lookup to compare).
+   - **Approval**: `actuation_approval_required_types` (e.g. `REROUTE`) and `actuation_approval_path` or env (two-person rule).
+   - **Rate / cooldown**: `actuation_max_actions_per_minute`, `actuation_cooldown_seconds`.
+3. **Reliability layer** — Wraps the above with:
+   - **Timeout and retry** per action (`actuation_timeout_sec`, `actuation_retry_count`).
+   - **Idempotency**: same action (entity + params) within `actuation_idempotency_ttl_sec` is skipped.
+   - **Outcome recording** to `actuation_outcomes_path` (default: `<actuator_dir>/action_outcomes.jsonl`).
+
+**Config / env:** `WAVEOS_ACTUATION_TIMEOUT_SEC`, `WAVEOS_ACTUATION_RETRY_COUNT`, `WAVEOS_ACTUATION_IDEMPOTENCY_TTL_SEC`, `WAVEOS_ACTUATION_OUTCOMES_PATH`, `WAVEOS_ACTUATION_USE_ADAPTERS`, `WAVEOS_ACTUATION_SAFETY_*`, `WAVEOS_ACTUATION_APPROVAL_*`, `WAVEOS_ACTUATION_COOLDOWN_SECONDS`, `WAVEOS_ACTUATION_MAX_ACTIONS_PER_MINUTE`.
+
+## Device adapters
+
+**Adapter-based actuator** (`actuation_use_adapters=true`): actions are dispatched to **device adapters**; if no adapter handles an action, it falls back to `SdnThermalActuator` (JSONL + optional POST).
+
+- **`SdnRestAdapter`** — POSTs to a URL (env `WAVEOS_ACTUATOR_SDN_URL` or per-action URL) for SDN/switch control.
+- **`OcppChargerAdapter`** — Stub for OCPP 1.6/2.0.1 (EV charger throttle/pause/fault readback); replace with real OCPP client.
+- **`ModbusInverterAdapter`** — Stub for Modbus TCP/RTU and SunSpec (inverter/BESS setpoints, curtailment); replace with pymodbus/sunspec2.
+
+Implement **`DeviceAdapterBase`** in `waveos.actuators.adapters`: `applies_to(action)`, `apply_one(action, timeout_seconds)` returning `AdapterResult(outcome, message)`. Register adapters in the list used by `AdapterBasedActuator` (e.g. in CLI when building the base actuator).
+
 ## See also
 
 - [PRD / capability matrix](PRD_DOD_REQUIREMENTS.md) — hardware abstraction and device API

@@ -42,7 +42,7 @@ One-page status: **current capabilities** and **remaining work** to make the pro
 - **mTLS config:** `ingestion_mtls_cert_path`, `ingestion_mtls_key_path`, `ingestion_mtls_ca_path`, `ingestion_url`; doc [MTLS_AND_ENCRYPTED_TELEMETRY.md](MTLS_AND_ENCRYPTED_TELEMETRY.md) (“bring your own gateway”).
 - **Compliance reports:** `waveos compliance-report --framework DoD|NERC|SOC2 --out <path> [--auditor-package <zip>] [--sign-key ...] [--retention-days N]`; optional sign key from config (`compliance_report_sign_key`).
 - **Auditor package:** Zip with report, manifest (chain of custody), optional audit excerpt.
-- **Compliance mapping:** [COMPLIANCE_MAPPING.md](COMPLIANCE_MAPPING.md) (DoD/NIST, NERC, SOC2, industrial); [DOD_CERTIFICATION_PATH.md](DOD_CERTIFICATION_PATH.md).
+- **Compliance mapping:** [COMPLIANCE_MAPPING.md](COMPLIANCE_MAPPING.md) (DoD/NIST, NERC, SOC2, industrial); [CONTROL_MAPPING.md](CONTROL_MAPPING.md) (control ID → code/evidence links); [DOD_CERTIFICATION_PATH.md](DOD_CERTIFICATION_PATH.md).
 - **RBAC and audit:** Roles, permissions, audit log, retention.
 
 ### Licensing and delivery

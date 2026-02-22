@@ -34,9 +34,19 @@ def normalize_record(record: Dict[str, Any]) -> TelemetrySample:
         raise
 
 
-def normalize_records(records: Iterable[Dict[str, Any]], run_id: str | None = None) -> List[TelemetrySample]:
+def normalize_records(
+    records: Iterable[Dict[str, Any]],
+    run_id: str | None = None,
+    max_records: int | None = None,
+) -> List[TelemetrySample]:
+    """Normalize telemetry records. If max_records is set (e.g. via WAVEOS_MAX_TELEMETRY_RECORDS), fail when input exceeds it to avoid OOM."""
     normalized: List[TelemetrySample] = []
     records_list = list(records)
+    if max_records is not None and len(records_list) > max_records:
+        raise ValueError(
+            f"Telemetry record count ({len(records_list)}) exceeds maximum ({max_records}). "
+            "Set WAVEOS_MAX_TELEMETRY_RECORDS to increase or reduce input size."
+        )
     metrics_counters = counters()
     duration = histograms()["normalize_duration"]
     with duration.time(), span("normalize_records") as active_span:

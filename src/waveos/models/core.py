@@ -101,6 +101,7 @@ class ActionRecommendation(BaseModel):
     entity_id: str
     rationale: str
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    rule_id: Optional[str] = None  # policy explainability: which rule produced this recommendation
 
 
 class BaselineStats(BaseModel):

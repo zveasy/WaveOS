@@ -32,7 +32,8 @@ def healthy_nodes(
             else:
                 dt = ts
             result[node_id] = dt >= cutoff
-        except Exception:
+        except (ValueError, TypeError) as exc:
+            logger.debug("Invalid heartbeat timestamp for node %s: %s", node_id, type(exc).__name__)
             result[node_id] = False
     return result
 

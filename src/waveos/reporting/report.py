@@ -1,13 +1,28 @@
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Iterable, List, Optional
+import hashlib
+import json
 import zipfile
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from jinja2 import Environment, FileSystemLoader
 
 from waveos.models import ActionRecommendation, Event, HealthScore, RunStats
-from waveos.utils import span, write_csv, write_json, write_jsonl
+from waveos.utils import get_logger, span, utc_now, write_csv, write_json, write_jsonl
+
+logger = get_logger("waveos.reporting")
+
+EVIDENCE_ATTESTATION_FILENAME = "evidence_attestation.json"
+ATTESTATION_ARTIFACTS = (
+    "run_meta.json",
+    "health_summary.json",
+    "actions.json",
+    "events.jsonl",
+    "explainability.json",
+    "report.html",
+    "metrics.csv",
+)
 
 
 def write_outputs(
@@ -46,7 +61,8 @@ def write_outputs(
             try:
                 from waveos.utils.encryption import write_json_encrypted
                 write_json_encrypted(run_meta_path, run_meta, fallback_plain=True)
-            except Exception:
+            except (ImportError, OSError, ValueError, TypeError) as exc:
+                logger.debug("Encrypted write failed, falling back to plain: %s", type(exc).__name__)
                 write_json(run_meta_path, run_meta)
         else:
             write_json(run_meta_path, run_meta)
@@ -70,8 +86,51 @@ def write_outputs(
 
     report_path = render_report(out_dir, health_payload, events_payload, actions_payload, run_id=run_id)
     if evidence_pack_enabled:
+        build_evidence_attestation(out_dir, run_id)
         _export_evidence_pack(out_dir, run_id)
     return report_path
+
+
+def _sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def build_evidence_attestation(out_dir: Path, run_id: str | None = None) -> Path:
+    """Write evidence_attestation.json with artifact paths and SHA-256 hashes (Persistence Phase 3)."""
+    artifacts: List[Dict[str, str]] = []
+    for name in ATTESTATION_ARTIFACTS:
+        p = out_dir / name
+        if p.is_file():
+            artifacts.append({"path": name, "sha256": _sha256_file(p)})
+    payload: Dict[str, Any] = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "timestamp_utc": utc_now().isoformat(),
+        "artifacts": artifacts,
+    }
+    attestation_path = out_dir / EVIDENCE_ATTESTATION_FILENAME
+    write_json(attestation_path, payload)
+    logger.debug("Wrote evidence attestation to %s", attestation_path)
+    return attestation_path
+
+
+def verify_evidence_attestation(attestation_path: Path) -> Tuple[bool, List[str]]:
+    """Verify artifact hashes in attestation manifest; return (ok, list of mismatch messages)."""
+    if not attestation_path.is_file():
+        return False, [f"Attestation file not found: {attestation_path}"]
+    payload = json.loads(attestation_path.read_text(encoding="utf-8"))
+    out_dir = attestation_path.parent
+    artifacts = payload.get("artifacts", [])
+    errors: List[str] = []
+    for entry in artifacts:
+        path = out_dir / entry.get("path", "")
+        expected = entry.get("sha256")
+        if not path.is_file():
+            errors.append(f"Missing artifact: {path.name}")
+            continue
+        if expected and _sha256_file(path) != expected:
+            errors.append(f"Hash mismatch: {path.name}")
+    return len(errors) == 0, errors
 
 
 def _export_evidence_pack(out_dir: Path, run_id: str | None) -> None:
@@ -101,6 +160,7 @@ def _build_explainability(
                 "entity_id": action["entity_id"],
                 "action": action["action"],
                 "rationale": action.get("rationale"),
+                "rule_id": action.get("rule_id"),
                 "drivers": health.get("drivers", []),
                 "status": health.get("status"),
                 "score": health.get("score"),

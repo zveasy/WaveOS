@@ -64,10 +64,12 @@ class WaveOSConfig(BaseModel):
     auth_tokens: Dict[str, str] = Field(default_factory=dict)
     policy_rules: list[Dict[str, Any]] = Field(default_factory=list)
     secrets_provider: Literal["env", "vault", "aws", "gcp"] = "env"
+    strict_secrets: bool = False  # Security Phase 2: when True, no env fallback for secrets (or set WAVEOS_STRICT_SECRETS=1)
     audit_log_path: Optional[str] = "out/audit.jsonl"
     audit_enabled: bool = True
     audit_max_bytes: int = 5_000_000
     audit_max_files: int = 5
+    audit_hash_chain: bool = False  # append-only tamper evidence (Area 6 Phase 2)
     retry_count: int = 3
     retry_base_delay: float = 0.2
     retry_max_delay: float = 2.0
@@ -76,6 +78,7 @@ class WaveOSConfig(BaseModel):
     collector_threads: int = 1
     max_memory_mb: Optional[int] = None
     max_cpu_seconds: Optional[int] = None
+    max_telemetry_records: Optional[int] = None  # cap per run to avoid OOM (default in normalize pipeline)
     idempotent_outputs: bool = True
     retention_days: Optional[int] = None
     compliance_report_sign_key: Optional[str] = None  # secret name or key for signing compliance reports
@@ -88,6 +91,7 @@ class WaveOSConfig(BaseModel):
     compatibility_matrix_path: Optional[str] = None
     state_registry_path: Optional[str] = None
     bundle_canary_percent: Optional[int] = None  # 0-100 canary rollout
+    bundle_canary_sites: Optional[List[str]] = None  # Fleet Phase 2: site_ids that get canary first
     bundle_offline_cache_path: Optional[str] = None
     # V3: tenant quotas, policy templates, zero-trust
     tenant_max_runs_per_hour: Optional[int] = None
@@ -103,11 +107,43 @@ class WaveOSConfig(BaseModel):
     ingestion_mtls_key_path: Optional[str] = None
     ingestion_mtls_ca_path: Optional[str] = None
     ingestion_url: Optional[str] = None  # optional ingestion endpoint URL
+    # Real device control: actuation reliability and safety
+    actuation_timeout_sec: float = 10.0
+    actuation_retry_count: int = 2
+    actuation_idempotency_ttl_sec: float = 300.0
+    actuation_outcomes_path: Optional[str] = None  # e.g. out/action_outcomes.jsonl
+    actuation_use_adapters: bool = False  # use device adapters (SDN REST, OCPP, Modbus) when True
+    actuation_safety_max_temp_c: Optional[float] = None
+    actuation_safety_min_soc_pct: Optional[float] = None
+    actuation_safety_max_current_a: Optional[float] = None
+    actuation_approval_required_types: List[str] = Field(default_factory=list)  # e.g. ["REROUTE"]
+    actuation_approval_path: Optional[str] = None
+    actuation_cooldown_seconds: float = 0.0
+    actuation_max_actions_per_minute: Optional[int] = None
+    # mTLS for actuator outbound (Area 7 Phase 1)
+    actuator_mtls_cert_path: Optional[str] = None
+    actuator_mtls_key_path: Optional[str] = None
+    actuator_mtls_ca_path: Optional[str] = None
+    # Persistence (area 6): durable storage for runs, events, actions
+    persistence_enabled: bool = False
+    persistence_db_path: Optional[str] = None  # SQLite path, e.g. out/waveos.db
+    # SRE (area 8): health/readiness HTTP
+    health_http_port: Optional[int] = None  # GET /health, GET /ready (liveness/readiness)
+
+
+# Maximum config file size (bytes) to avoid OOM when loading. Default 1 MB.
+MAX_CONFIG_FILE_BYTES = 1 * 1024 * 1024
 
 
 def _load_file(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
+    size = path.stat().st_size
+    if size > MAX_CONFIG_FILE_BYTES:
+        raise ValueError(
+            f"Config file {path} size ({size} bytes) exceeds maximum ({MAX_CONFIG_FILE_BYTES} bytes). "
+            "Reduce file size or split configuration."
+        )
     if path.suffix in {".toml", ".tml"}:
         return tomllib.loads(path.read_text(encoding="utf-8"))
     if path.suffix == ".json":
@@ -173,13 +209,16 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "drop_privileges_user": os.getenv("WAVEOS_DROP_PRIVILEGES_USER"),
         "drop_privileges_group": os.getenv("WAVEOS_DROP_PRIVILEGES_GROUP"),
         "secrets_provider": os.getenv("WAVEOS_SECRETS_PROVIDER"),
+        "strict_secrets": os.getenv("WAVEOS_STRICT_SECRETS"),
         "audit_log_path": os.getenv("WAVEOS_AUDIT_LOG_PATH"),
         "audit_enabled": os.getenv("WAVEOS_AUDIT_ENABLED"),
         "audit_max_bytes": os.getenv("WAVEOS_AUDIT_LOG_MAX_BYTES"),
         "audit_max_files": os.getenv("WAVEOS_AUDIT_LOG_MAX_FILES"),
+        "audit_hash_chain": os.getenv("WAVEOS_AUDIT_HASH_CHAIN"),
         "collector_threads": os.getenv("WAVEOS_COLLECTOR_THREADS"),
         "max_memory_mb": os.getenv("WAVEOS_MAX_MEMORY_MB"),
         "max_cpu_seconds": os.getenv("WAVEOS_MAX_CPU_SECONDS"),
+        "max_telemetry_records": os.getenv("WAVEOS_MAX_TELEMETRY_RECORDS"),
         "idempotent_outputs": os.getenv("WAVEOS_IDEMPOTENT_OUTPUTS"),
         "retention_days": os.getenv("WAVEOS_RETENTION_DAYS"),
         "compliance_report_sign_key": os.getenv("WAVEOS_COMPLIANCE_REPORT_SIGN_KEY"),
@@ -191,6 +230,7 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "compatibility_matrix_path": os.getenv("WAVEOS_COMPATIBILITY_MATRIX_PATH"),
         "state_registry_path": os.getenv("WAVEOS_STATE_REGISTRY_PATH"),
         "bundle_canary_percent": os.getenv("WAVEOS_BUNDLE_CANARY_PERCENT"),
+        "bundle_canary_sites": os.getenv("WAVEOS_BUNDLE_CANARY_SITES"),
         "bundle_offline_cache_path": os.getenv("WAVEOS_BUNDLE_OFFLINE_CACHE_PATH"),
         "tenant_max_runs_per_hour": os.getenv("WAVEOS_TENANT_MAX_RUNS_PER_HOUR"),
         "policy_templates_path": os.getenv("WAVEOS_POLICY_TEMPLATES_PATH"),
@@ -203,6 +243,24 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "ingestion_mtls_key_path": os.getenv("WAVEOS_INGESTION_MTLS_KEY_PATH"),
         "ingestion_mtls_ca_path": os.getenv("WAVEOS_INGESTION_MTLS_CA_PATH"),
         "ingestion_url": os.getenv("WAVEOS_INGESTION_URL"),
+        "actuation_timeout_sec": os.getenv("WAVEOS_ACTUATION_TIMEOUT_SEC"),
+        "actuation_retry_count": os.getenv("WAVEOS_ACTUATION_RETRY_COUNT"),
+        "actuation_idempotency_ttl_sec": os.getenv("WAVEOS_ACTUATION_IDEMPOTENCY_TTL_SEC"),
+        "actuation_outcomes_path": os.getenv("WAVEOS_ACTUATION_OUTCOMES_PATH"),
+        "actuation_use_adapters": os.getenv("WAVEOS_ACTUATION_USE_ADAPTERS"),
+        "actuation_safety_max_temp_c": os.getenv("WAVEOS_ACTUATION_SAFETY_MAX_TEMP_C"),
+        "actuation_safety_min_soc_pct": os.getenv("WAVEOS_ACTUATION_SAFETY_MIN_SOC_PCT"),
+        "actuation_safety_max_current_a": os.getenv("WAVEOS_ACTUATION_SAFETY_MAX_CURRENT_A"),
+        "actuation_approval_required_types": os.getenv("WAVEOS_ACTUATION_APPROVAL_REQUIRED_TYPES"),  # comma-separated
+        "actuation_approval_path": os.getenv("WAVEOS_ACTUATION_APPROVAL_PATH"),
+        "actuation_cooldown_seconds": os.getenv("WAVEOS_ACTUATION_COOLDOWN_SECONDS"),
+        "actuation_max_actions_per_minute": os.getenv("WAVEOS_ACTUATION_MAX_ACTIONS_PER_MINUTE"),
+        "actuator_mtls_cert_path": os.getenv("WAVEOS_ACTUATOR_MTLS_CERT_PATH"),
+        "actuator_mtls_key_path": os.getenv("WAVEOS_ACTUATOR_MTLS_KEY_PATH"),
+        "actuator_mtls_ca_path": os.getenv("WAVEOS_ACTUATOR_MTLS_CA_PATH"),
+        "persistence_enabled": os.getenv("WAVEOS_PERSISTENCE_ENABLED"),
+        "persistence_db_path": os.getenv("WAVEOS_PERSISTENCE_DB_PATH"),
+        "health_http_port": os.getenv("WAVEOS_HEALTH_HTTP_PORT"),
     }
     env = {key: value for key, value in env.items() if value is not None}
     if "metrics_port" in env:
@@ -230,6 +288,8 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
             raise ValueError("audit_max_files must be an integer") from exc
     if "audit_enabled" in env and env["audit_enabled"] is not None:
         env["audit_enabled"] = str(env["audit_enabled"]).lower() in {"1", "true", "yes", "on"}
+    if "audit_hash_chain" in env and env["audit_hash_chain"] is not None:
+        env["audit_hash_chain"] = str(env["audit_hash_chain"]).lower() in {"1", "true", "yes", "on"}
     if "evidence_pack_enabled" in env and env["evidence_pack_enabled"] is not None:
         env["evidence_pack_enabled"] = str(env["evidence_pack_enabled"]).lower() in {"1", "true", "yes", "on"}
     if "enforce_actions" in env and env["enforce_actions"] is not None:
@@ -262,7 +322,7 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
             env["alert_email_smtp_port"] = int(env["alert_email_smtp_port"])
         except ValueError as exc:
             raise ValueError("alert_email_smtp_port must be an integer") from exc
-    for key in ("collector_threads", "max_memory_mb", "max_cpu_seconds", "retention_days"):
+    for key in ("collector_threads", "max_memory_mb", "max_cpu_seconds", "max_telemetry_records", "retention_days"):
         if key in env and env[key] is not None:
             try:
                 env[key] = int(env[key])
@@ -284,6 +344,42 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
             env[key] = str(env[key]).lower() in {"1", "true", "yes", "on"}
     if "plugin_dirs" in env and env["plugin_dirs"] is not None:
         env["plugin_dirs"] = [p.strip() for p in str(env["plugin_dirs"]).split(",") if p.strip()]
+    if "bundle_canary_sites" in env and env["bundle_canary_sites"] is not None:
+        v = env["bundle_canary_sites"]
+        env["bundle_canary_sites"] = [s.strip() for s in str(v).split(",") if s.strip()] if v else []
+    for key in ("actuation_timeout_sec", "actuation_idempotency_ttl_sec", "actuation_cooldown_seconds"):
+        if key in env and env[key] is not None:
+            try:
+                env[key] = float(env[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be a number") from exc
+    for key in ("actuation_retry_count", "actuation_max_actions_per_minute"):
+        if key in env and env[key] is not None:
+            try:
+                env[key] = int(env[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be an integer") from exc
+    for key in ("actuation_safety_max_temp_c", "actuation_safety_min_soc_pct", "actuation_safety_max_current_a"):
+        if key in env and env[key] is not None:
+            try:
+                env[key] = float(env[key])
+            except ValueError as exc:
+                raise ValueError(f"{key} must be a number") from exc
+    if "actuation_use_adapters" in env and env["actuation_use_adapters"] is not None:
+        env["actuation_use_adapters"] = str(env["actuation_use_adapters"]).lower() in {"1", "true", "yes", "on"}
+    if "actuation_approval_required_types" in env and env["actuation_approval_required_types"] is not None:
+        env["actuation_approval_required_types"] = [
+            t.strip() for t in str(env["actuation_approval_required_types"]).split(",") if t.strip()
+        ]
+    if "persistence_enabled" in env and env["persistence_enabled"] is not None:
+        env["persistence_enabled"] = str(env["persistence_enabled"]).lower() in {"1", "true", "yes", "on"}
+    if "strict_secrets" in env and env["strict_secrets"] is not None:
+        env["strict_secrets"] = str(env["strict_secrets"]).lower() in {"1", "true", "yes", "on"}
+    if "health_http_port" in env and env["health_http_port"] is not None:
+        try:
+            env["health_http_port"] = int(env["health_http_port"])
+        except ValueError as exc:
+            raise ValueError("health_http_port must be an integer") from exc
     payload.update(env)
     config = WaveOSConfig(**payload)
     if config.schema_version != 1:

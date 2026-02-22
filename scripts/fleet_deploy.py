@@ -9,6 +9,7 @@ Usage:
 Options:
   --hosts         Comma-separated SSH hosts (user@host or host).
   --nodes-file    Path to nodes.json; uses node_id as host (or meta.ssh_host if set).
+  --canary-sites  Only deploy to nodes in these site IDs (comma-separated; Fleet Phase 2 canary-by-site).
   --bundle-id     Bundle ID to install.
   --cache         Path to bundle cache (or --bundle-dir for a single bundle directory).
   --bundle-dir    Path to bundle directory (alternative to --cache + --bundle-id).
@@ -29,6 +30,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Deploy WaveOS bundle to multiple hosts")
     ap.add_argument("--hosts", type=str, help="Comma-separated SSH hosts")
     ap.add_argument("--nodes-file", type=str, help="Path to nodes.json (node_id or meta.ssh_host used as host)")
+    ap.add_argument("--canary-sites", type=str, help="Only deploy to nodes in these site IDs (comma-separated)")
     ap.add_argument("--bundle-id", type=str, help="Bundle ID (when using --cache)")
     ap.add_argument("--cache", type=str, help="Path to bundle cache directory")
     ap.add_argument("--bundle-dir", type=str, help="Path to single bundle directory (instead of cache)")
@@ -46,8 +48,15 @@ def main() -> int:
                 data = json.loads(path.read_text(encoding="utf-8"))
                 nodes = data.get("nodes", data) if isinstance(data, dict) else data
                 if isinstance(nodes, list):
+                    canary_sites = None
+                    if getattr(args, "canary_sites", None):
+                        canary_sites = {s.strip() for s in args.canary_sites.split(",") if s.strip()}
                     for n in nodes:
                         if isinstance(n, dict):
+                            if canary_sites:
+                                site = n.get("site_id")
+                                if site not in canary_sites:
+                                    continue
                             h = n.get("meta", {}).get("ssh_host") or n.get("node_id")
                             if h:
                                 hosts.append(h)

@@ -45,7 +45,7 @@ def read_latest_heartbeats(heartbeat_path: Path, max_per_node: int = 1) -> Dict[
                 nid = rec.get("node_id")
                 if nid:
                     by_node[nid].append(rec)
-            except Exception:
+            except json.JSONDecodeError:
                 continue
     return {
         nid: (sorted(recs, key=lambda r: r.get("timestamp", ""), reverse=True)[:max_per_node][0])

@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import shlex
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
 from waveos.models import Event
 from waveos.utils import utc_now, write_jsonl, get_logger
+
+logger = get_logger("waveos.recovery")
+
+# Shell metacharacters that would make shell=True unsafe; reject if present in recovery commands.
+# Space is allowed (shlex.split handles it); reject ;|&$()`<> newlines and backslash.
+_UNSAFE_SHELL_CHARS = frozenset(";|&$()`<>\\\n\r\t")
 
 
 @dataclass
@@ -27,7 +35,8 @@ def _recovery_approved(approval_path: Path | None, env_approved: bool = False) -
         return False
     try:
         return approval_path.read_text(encoding="utf-8").strip().lower() == "approved"
-    except Exception:
+    except OSError as exc:
+        logger.debug("Could not read recovery approval file %s: %s", approval_path, exc)
         return False
 
 
@@ -91,12 +100,24 @@ class RecoveryOrchestrator:
         return _recovery_approved(self.approval_path, self.env_approved)
 
     def _run_command(self, command: str) -> None:
-        import subprocess
-
+        """Run recovery command without shell to avoid injection. Command must be a single executable and args (no shell metacharacters)."""
+        cmd = (command or "").strip()
+        if not cmd:
+            return
+        if _UNSAFE_SHELL_CHARS.intersection(cmd):
+            self.logger.warning(
+                "Recovery command rejected: contains unsafe shell metacharacters. Use a single executable and arguments only (no ;|&$() etc.)."
+            )
+            return
         try:
-            subprocess.run(command, shell=True, check=False)
+            args = shlex.split(cmd, posix=True)
+            if not args:
+                return
+            subprocess.run(args, shell=False, check=False, timeout=60)
+        except (ValueError, FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            self.logger.warning("Recovery command failed: %s", type(exc).__name__)
         except Exception as exc:
-            self.logger.warning("Recovery command failed: %s", exc)
+            self.logger.warning("Recovery command failed: %s", type(exc).__name__)
 
 
 def watchdog_ping(path: Path) -> None:

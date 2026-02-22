@@ -9,19 +9,24 @@ import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Callable, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 from rich.console import Console
 from rich.table import Table
 
 from waveos.actuators import MockActuator, SdnThermalActuator
-from waveos.collectors import load_records, load_records_from_url
+from waveos.actuators.reliability import ActuationReliabilityLayer
+from waveos.actuators.safety import SafetyInterlock, safe_actuator
+from waveos.actuators.adapter_actuator import AdapterBasedActuator
+from waveos.actuators.adapters import SdnRestAdapter
+from waveos.collectors import load_records, load_records_from_mqtt, load_records_from_url
 from waveos.licensing import LicenseError, require_license
 from waveos.models import ActionRecommendation, BaselineStats, Event, EventLevel, HealthScore, HealthStatus, RunStats
 from waveos.normalize import normalize_records
 from waveos.policy import recommend_actions
 from waveos.reporting import render_report, write_outputs
+from waveos.persistence import build_incident_from_run, persist_incident_if_enabled, persist_run_if_enabled
 from waveos.scoring import build_stats, score_links
 from waveos.sim import build_demo_dataset
 from waveos.sim.generator import generate_telemetry, _make_links
@@ -35,6 +40,7 @@ from waveos.recovery import RecoveryOrchestrator, watchdog_ping
 from waveos.utils import (
     WaveOSConfig,
     get_logger,
+    start_health_server,
     install_signal_handlers,
     read_json,
     read_jsonl,
@@ -57,6 +63,7 @@ from waveos.utils import (
     append_audit,
     utc_now,
     get_secret,
+    set_strict_secrets,
     config_fingerprint,
     start_proxy,
     ProxyConfig,
@@ -98,7 +105,7 @@ def _load_samples(in_dir: Path, run_id: str | None = None, config: WaveOSConfig 
             if should_shutdown():
                 return samples
             records = load_records(path, max_failures=config.breaker_max_failures if config else None, reset_after=config.breaker_reset_after if config else None)
-            samples.extend(normalize_records(records, run_id=run_id))
+            samples.extend(normalize_records(records, run_id=run_id, max_records=config.max_telemetry_records if config else None))
         return samples
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -116,12 +123,19 @@ def _load_samples(in_dir: Path, run_id: str | None = None, config: WaveOSConfig 
             if should_shutdown():
                 return samples
             records = future.result()
-            samples.extend(normalize_records(records, run_id=run_id))
+            samples.extend(normalize_records(records, run_id=run_id, max_records=config.max_telemetry_records if config else None))
     return samples
 
 
-def _get_actuator(config, actuator_dir: Path, run_id: str):
-    """Return actuator instance: custom class from config.actuator_class or SdnThermalActuator."""
+def _get_actuator(
+    config,
+    actuator_dir: Path,
+    run_id: str,
+    state_lookup: Optional[Callable[[str], dict]] = None,
+):
+    """Build actuator chain: base (SdnThermal or AdapterBased or custom) -> optional Safety -> optional Reliability.
+    state_lookup: optional (entity_id) -> dict of metrics (e.g. temperature_c, battery_soc_pct, current_a) for safety limits."""
+    # 1) Base actuator
     if config and getattr(config, "actuator_class", None):
         spec = config.actuator_class.strip()
         if ":" in spec:
@@ -130,11 +144,94 @@ def _get_actuator(config, actuator_dir: Path, run_id: str):
             mod = importlib.import_module(mod_name)
             cls = getattr(mod, cls_name)
             try:
-                return cls(output_dir=actuator_dir, run_id=run_id)
+                base = cls(output_dir=actuator_dir, run_id=run_id)
             except TypeError:
-                return cls()
-        logger.warning("actuator_class must be 'module:ClassName'; using SdnThermalActuator")
+                base = cls()
+        else:
+            logger.warning("actuator_class must be 'module:ClassName'; using default")
+            base = _default_base_actuator(config, actuator_dir, run_id)
+    else:
+        base = _default_base_actuator(config, actuator_dir, run_id)
+
+    # 2) Optional safety interlock (with state from run/telemetry when provided)
+    interlock = _build_safety_interlock(config, state_lookup=state_lookup)
+    if interlock is not None:
+        base = safe_actuator(interlock, base)
+
+    # 3) Optional reliability layer (when enforce_actions)
+    if config and getattr(config, "enforce_actions", False):
+        base = _wrap_reliability(config, base, actuator_dir, run_id)
+
+    return base
+
+
+def _default_base_actuator(config, actuator_dir: Path, run_id: str):
+    """Default base: AdapterBasedActuator when actuation_use_adapters else SdnThermalActuator."""
+    if config and getattr(config, "actuation_use_adapters", False):
+        adapters = [
+            SdnRestAdapter(
+                mtls_cert_path=getattr(config, "actuator_mtls_cert_path", None),
+                mtls_key_path=getattr(config, "actuator_mtls_key_path", None),
+                mtls_ca_path=getattr(config, "actuator_mtls_ca_path", None),
+            )
+        ]
+        fallback = SdnThermalActuator(output_dir=actuator_dir, run_id=run_id)
+        timeout = getattr(config, "actuation_timeout_sec", 10.0) or 10.0
+        return AdapterBasedActuator(
+            adapters=adapters,
+            fallback=fallback,
+            output_dir=actuator_dir,
+            run_id=run_id,
+            timeout_seconds=float(timeout),
+        )
     return SdnThermalActuator(output_dir=actuator_dir, run_id=run_id)
+
+
+def _build_safety_interlock(
+    config,
+    state_lookup: Optional[Callable[[str], dict]] = None,
+) -> Optional[SafetyInterlock]:
+    """Build SafetyInterlock from config if any safety setting is set.
+    state_lookup: optional (entity_id) -> dict with temperature_c, battery_soc_pct/soc_pct, current_a for hard limits."""
+    if not config:
+        return None
+    max_temp = getattr(config, "actuation_safety_max_temp_c", None)
+    min_soc = getattr(config, "actuation_safety_min_soc_pct", None)
+    max_current = getattr(config, "actuation_safety_max_current_a", None)
+    approval_types = getattr(config, "actuation_approval_required_types", None) or []
+    approval_path = getattr(config, "actuation_approval_path", None)
+    cooldown = float(getattr(config, "actuation_cooldown_seconds", 0) or 0)
+    max_per_min = getattr(config, "actuation_max_actions_per_minute", None)
+    if max_temp is None and min_soc is None and max_current is None and not approval_types and cooldown <= 0 and max_per_min is None:
+        return None
+    approval_path_resolved = Path(approval_path).expanduser() if approval_path else None
+    return SafetyInterlock(
+        max_temp_c=max_temp,
+        min_soc_pct=min_soc,
+        max_current_a=max_current,
+        approval_required_action_types=set(approval_types),
+        approval_path=approval_path_resolved,
+        max_actions_per_minute=max_per_min,
+        cooldown_seconds=cooldown,
+        state_lookup=state_lookup,
+    )
+
+
+def _wrap_reliability(config, inner, actuator_dir: Path, run_id: str):
+    """Wrap actuator with ActuationReliabilityLayer using config."""
+    timeout = float(getattr(config, "actuation_timeout_sec", 10) or 10)
+    retry = int(getattr(config, "actuation_retry_count", 2) or 2)
+    ttl = float(getattr(config, "actuation_idempotency_ttl_sec", 300) or 300)
+    outcomes_path = getattr(config, "actuation_outcomes_path", None)
+    path = Path(outcomes_path).expanduser() if outcomes_path else (actuator_dir / "action_outcomes.jsonl")
+    return ActuationReliabilityLayer(
+        inner=inner,
+        run_id=run_id,
+        timeout_seconds=timeout,
+        retry_count=retry,
+        idempotency_ttl_seconds=ttl,
+        outcomes_path=path,
+    )
 
 
 def _baseline_map(records: Iterable[dict]) -> Dict[str, BaselineStats]:
@@ -269,7 +366,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             args.input,
             timeout=getattr(config, "ingestion_http_timeout", 10.0) if config else 10.0,
         )
-        samples = list(normalize_records(records, run_id=run_id))
+        samples = list(normalize_records(records, run_id=run_id, max_records=config.max_telemetry_records if config else None))
     else:
         samples = _load_samples(in_dir, run_id=run_id, config=config)
     _, run_stats = build_stats(samples)
@@ -283,7 +380,8 @@ def cmd_run(args: argparse.Namespace) -> int:
     events = _build_events(scores, run_id=run_id)
     if config and config.enforce_actions:
         actuator_dir = (Path(config.actuator_output_dir).expanduser() if config.actuator_output_dir else out_dir / "actuator")
-        real_actuator = _get_actuator(config, actuator_dir, run_id)
+        state_lookup = (lambda eid: run_map[eid].metrics if eid in run_map else {}) if run_map else None
+        real_actuator = _get_actuator(config, actuator_dir, run_id, state_lookup=state_lookup)
         actuator_name = getattr(real_actuator, "name", real_actuator.__class__.__name__)
         real_actuator.apply_safe(actions)
         enforced_path = out_dir / "enforced_actions.jsonl"
@@ -343,6 +441,21 @@ def cmd_run(args: argparse.Namespace) -> int:
             "policy_version": policy_version,
         },
     }
+    # Post-action verification: attach action outcome counts from reliability layer (closed-loop Phase 1)
+    if config and config.enforce_actions:
+        _actuator_dir = (Path(config.actuator_output_dir).expanduser() if config.actuator_output_dir else out_dir / "actuator")
+        _outcomes_path = _actuator_dir / "action_outcomes.jsonl"
+        if _outcomes_path.exists():
+            try:
+                _outcome_rows = list(read_jsonl(_outcomes_path))
+                _counts: Dict[str, int] = {}
+                for _r in _outcome_rows:
+                    _o = _r.get("outcome", "unknown")
+                    _counts[_o] = _counts.get(_o, 0) + 1
+                run_meta["action_outcomes"] = _counts
+                run_meta["action_outcomes_path"] = str(_outcomes_path)
+            except Exception as _e:
+                logger.debug("Could not read action outcomes: %s", _e)
     if config and config.recovery_enabled:
         approval_path = Path(config.recovery_approval_path) if config.recovery_approval_path else None
         env_approved = (os.environ.get("WAVEOS_RECOVERY_APPROVED", "").lower() in {"1", "true", "yes", "on"})
@@ -372,6 +485,26 @@ def cmd_run(args: argparse.Namespace) -> int:
         evidence_pack_enabled=config.evidence_pack_enabled if config else True,
         encrypt_artifacts=config.encrypt_artifacts if config else False,
     )
+    if config and getattr(config, "persistence_enabled", False) and getattr(config, "persistence_db_path", None):
+        db_path = Path(config.persistence_db_path).expanduser().resolve()
+        persist_run_if_enabled(
+            db_path,
+            run_id=run_id,
+            output_dir=str(out_dir),
+            run_meta=run_meta,
+            scores=[s.model_dump() for s in scores],
+            events=[e.model_dump() for e in events],
+            actions=[a.model_dump() for a in actions],
+        )
+        incident = build_incident_from_run(
+            run_id=run_id,
+            run_meta=run_meta,
+            scores=[s.model_dump() for s in scores],
+            actions=[a.model_dump() for a in actions],
+            action_outcomes=run_meta.get("action_outcomes"),
+        )
+        if incident:
+            persist_incident_if_enabled(db_path, incident)
     _render_console_summary(scores)
     console.print(f"Report written to {report_path}")
     console.print(f"Run ID: {run_id}")
@@ -421,6 +554,54 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_ingest_mqtt(args: argparse.Namespace) -> int:
+    """Pull telemetry from MQTT topic and write to file (Data plane Phase 1)."""
+    if load_records_from_mqtt is None:
+        console.print("MQTT connector requires paho-mqtt: pip install paho-mqtt")
+        return 1
+    out_path = Path(args.output)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        records = load_records_from_mqtt(
+            args.broker,
+            args.topic,
+            max_messages=getattr(args, "max_messages", 1000),
+            timeout_sec=getattr(args, "timeout", 30.0),
+            port=getattr(args, "port", 1883),
+        )
+    except Exception as e:
+        console.print(f"MQTT ingest failed: {e}")
+        return 1
+    write_jsonl(out_path, records)
+    console.print(f"Wrote {len(records)} records to {out_path}")
+    return 0
+
+
+def cmd_soak_test(args: argparse.Namespace) -> int:
+    """Run pipeline repeatedly to validate stability (SRE Phase 3: soak tests)."""
+    n_runs = getattr(args, "runs", 5)
+    interval = getattr(args, "every", 10)
+    base_out = Path(args.output)
+    min_success = getattr(args, "min_success", None)  # require at least this many successes
+    success = 0
+    for idx in range(n_runs):
+        if should_shutdown():
+            return 1
+        run_out = base_out / f"soak_run_{idx + 1}"
+        run_args = argparse.Namespace(**vars(args))
+        run_args.output = str(run_out)
+        rc = cmd_run(run_args)
+        if rc == 0:
+            success += 1
+        if idx < n_runs - 1:
+            time.sleep(interval)
+    console.print(f"Soak test: {success}/{n_runs} runs succeeded.")
+    if min_success is not None and success < min_success:
+        console.print(f"[red]Required at least {min_success} successes.[/red]")
+        return 1
+    return 0 if success == n_runs else 1
+
+
 def cmd_supervise(args: argparse.Namespace) -> int:
     if not args.command:
         console.print("Missing command to supervise.")
@@ -464,8 +645,22 @@ def cmd_profile(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _cleanup_allowed_base() -> Path:
+    """Base path under which cleanup is allowed (SSRF/path traversal protection)."""
+    env_base = os.environ.get("WAVEOS_CLEANUP_ALLOWED_BASE", "").strip()
+    if env_base:
+        return Path(env_base).resolve()
+    return Path.cwd().resolve()
+
+
 def cmd_cleanup(args: argparse.Namespace) -> int:
-    base = Path(args.path)
+    base = Path(args.path).resolve()
+    allowed = _cleanup_allowed_base()
+    try:
+        base.relative_to(allowed)
+    except ValueError:
+        console.print(f"Cleanup path must be under allowed base {allowed}. Set WAVEOS_CLEANUP_ALLOWED_BASE to override.")
+        return 2
     if not base.exists():
         console.print("Cleanup path does not exist.")
         return 2
@@ -541,14 +736,14 @@ def cmd_list_devices(args: argparse.Namespace) -> int:
                 if driver:
                     for dev_id in driver.list_devices():
                         console.print(f"    -> {dev_id}")
-            except Exception:
-                pass
+            except (ValueError, KeyError) as exc:
+                logger.debug("list_devices failed for %s: %s", key, type(exc).__name__)
     return 0
 
 
 def cmd_list_nodes(args: argparse.Namespace) -> int:
-    """List registered orchestration nodes (V3)."""
-    from waveos.orchestration import get_node_registry, load_nodes_from_file
+    """List registered orchestration nodes (V3). Optional --sites or --canary-sites filter (Fleet Phase 2)."""
+    from waveos.orchestration import get_node_registry, get_nodes_in_sites, load_nodes_from_file
     nodes_path = getattr(args, "file", None)
     if nodes_path:
         load_nodes_from_file(Path(nodes_path))
@@ -560,10 +755,380 @@ def cmd_list_nodes(args: argparse.Namespace) -> int:
     if not reg:
         console.print("No nodes registered.")
         return 0
+    config = getattr(args, "config_obj", None)
+    canary_sites = getattr(args, "canary_sites", None) or (config and getattr(config, "bundle_canary_sites", None))
+    sites_filter = getattr(args, "sites", None)
+    if canary_sites:
+        site_list = [s.strip() for s in (canary_sites.split(",") if isinstance(canary_sites, str) else canary_sites) if s.strip()]
+        nodes = get_nodes_in_sites(site_list)
+        if not nodes:
+            console.print(f"No nodes in canary sites: {site_list}")
+            return 0
+        for rec in sorted(nodes, key=lambda r: r.node_id):
+            role_str = rec.role.value if hasattr(rec.role, "value") else str(rec.role)
+            site_str = f"  site={rec.site_id}" if rec.site_id else ""
+            console.print(f"  {rec.node_id}  role={role_str}{site_str}")
+        return 0
+    if sites_filter:
+        site_list = [s.strip() for s in (sites_filter.split(",") if isinstance(sites_filter, str) else sites_filter) if s.strip()]
+        nodes = get_nodes_in_sites(site_list)
+        for rec in sorted(nodes, key=lambda r: r.node_id):
+            role_str = rec.role.value if hasattr(rec.role, "value") else str(rec.role)
+            site_str = f"  site={rec.site_id}" if rec.site_id else ""
+            console.print(f"  {rec.node_id}  role={role_str}{site_str}")
+        return 0
     for nid, rec in sorted(reg.items()):
         role = getattr(rec, "role", None)
         role_str = role.value if hasattr(role, "value") else str(rec)
-        console.print(f"  {nid}  role={role_str}")
+        site_str = f"  site={rec.site_id}" if getattr(rec, "site_id", None) else ""
+        console.print(f"  {nid}  role={role_str}{site_str}")
+    return 0
+
+
+def cmd_fleet_status(args: argparse.Namespace) -> int:
+    """Fleet status: nodes + optional health from heartbeats (Area 3 Phase 1)."""
+    from waveos.node_health import healthy_nodes
+    from waveos.orchestration import get_node_registry, load_nodes_from_file
+    config = getattr(args, "config_obj", None)
+    nodes_path = getattr(args, "file", None) or (Path(config.state_registry_path).parent / "nodes.json" if config and config.state_registry_path else None) or Path("out/nodes.json")
+    if isinstance(nodes_path, str):
+        nodes_path = Path(nodes_path)
+    if nodes_path.is_file():
+        load_nodes_from_file(nodes_path)
+    reg = get_node_registry()
+    heartbeat_path = Path(config.watchdog_path or "out/watchdog.txt").parent / "heartbeats.jsonl" if config else None
+    if not heartbeat_path or not heartbeat_path.is_file():
+        heartbeat_path = Path("out/heartbeats.jsonl")
+    health: Dict[str, bool] = {}
+    if heartbeat_path.is_file():
+        health = healthy_nodes(heartbeat_path, max_age_seconds=float(getattr(args, "max_age_seconds", 120) or 120))
+    console.print("[bold]Fleet status[/bold]")
+    if not reg:
+        console.print("  No nodes in registry. Use list-nodes --file <nodes.json> to load.")
+        return 0
+    for nid, rec in sorted(reg.items()):
+        role = getattr(rec, "role", None)
+        role_str = role.value if hasattr(role, "value") else "?"
+        ok = health.get(nid, None)
+        status = "ok" if ok is True else ("stale" if ok is False else "—")
+        site_str = f"  site={rec.site_id}" if getattr(rec, "site_id", None) else ""
+        console.print(f"  {nid}  role={role_str}  health={status}{site_str}")
+    return 0
+
+
+def cmd_runbook_list(args: argparse.Namespace) -> int:
+    """List available runbooks (SRE Phase 2)."""
+    from waveos.runbooks import list_runbooks
+    for rb in list_runbooks():
+        console.print(f"  [bold]{rb.id}[/bold]  {rb.title}")
+        desc = (rb.description[:60] + "...") if len(rb.description) > 60 else rb.description
+        console.print(f"    trigger={rb.trigger}  {desc}")
+    return 0
+
+
+def cmd_runbook_run(args: argparse.Namespace) -> int:
+    """Run a runbook by id (steps are informational)."""
+    from waveos.runbooks import get_runbook, run_runbook
+    runbook_id = getattr(args, "runbook_id", None)
+    if not runbook_id:
+        console.print("Usage: waveos runbook run <runbook_id>")
+        return 1
+    rb = get_runbook(runbook_id)
+    if not rb:
+        console.print(f"Runbook not found: {runbook_id}")
+        return 1
+    result = run_runbook(runbook_id)
+    if not result.get("ok"):
+        console.print(result.get("error", "Unknown error"))
+        return 1
+    console.print(f"[bold]{result['title']}[/bold]")
+    for s in result.get("steps", []):
+        console.print(f"  {s['step']}. {s['title']}")
+        if s.get("description"):
+            console.print(f"     {s['description']}")
+        if s.get("command"):
+            console.print(f"     command: {s['command']}")
+    return 0
+
+
+def cmd_install(args: argparse.Namespace) -> int:
+    """One-command install: create out dirs and optional config example (Productization Phase 1)."""
+    prefix = Path(getattr(args, "prefix", ".")).resolve()
+    write_config_example = getattr(args, "config_example", False)
+    (prefix / "out").mkdir(parents=True, exist_ok=True)
+    (prefix / "out" / "bundles" / "active").mkdir(parents=True, exist_ok=True)
+    (prefix / "out" / "bundles" / "history").mkdir(parents=True, exist_ok=True)
+    (prefix / "out" / "bundles" / "state").mkdir(parents=True, exist_ok=True)
+    (prefix / "out" / "actuator").mkdir(parents=True, exist_ok=True)
+    (prefix / "out" / "nodes").mkdir(parents=True, exist_ok=True)
+    for name in ("audit.jsonl", "watchdog.txt"):
+        p = prefix / "out" / name
+        if not p.exists():
+            p.touch()
+    if write_config_example:
+        config_path = prefix / "out" / "config.toml.example"
+        if not config_path.exists():
+            config_path.write_text(
+                "# WaveOS config example. Copy to config.toml and customize.\n"
+                "# See docs and WAVEOS_* env vars for all options.\n\n"
+                "schema_version = 1\nlog_level = \"INFO\"\nlog_format = \"json\"\n\n"
+                "persistence_enabled = false\npersistence_db_path = \"out/waveos.db\"\n\n"
+                "enforce_actions = false\nactuation_use_adapters = false\n",
+                encoding="utf-8",
+            )
+            console.print(f"Wrote {config_path}")
+    console.print(f"Install complete (prefix={prefix}). Next: pip install -e . ; waveos baseline --in <dir> --out out")
+    return 0
+
+
+def cmd_migrate(args: argparse.Namespace) -> int:
+    """Ensure persistence DB schema is current (Productization Phase 1)."""
+    config = getattr(args, "config_obj", None)
+    db_path = getattr(args, "db", None)
+    if not db_path and config and getattr(config, "persistence_db_path", None):
+        db_path = config.persistence_db_path
+    if not db_path:
+        console.print("No DB path. Use --db <path> or set persistence_db_path in config.")
+        return 1
+    path = Path(db_path)
+    from waveos.persistence.store import get_store
+    store = get_store(path)
+    if not store:
+        console.print("Failed to create or open store.")
+        return 1
+    console.print(f"Schema at version 1: {path}")
+    return 0
+
+
+def cmd_last_runs(args: argparse.Namespace) -> int:
+    """Show recent runs and incidents from persistence (admin view)."""
+    config = getattr(args, "config_obj", None)
+    db_path = getattr(args, "db", None) or (config and getattr(config, "persistence_db_path", None)) or os.getenv("WAVEOS_PERSISTENCE_DB_PATH")
+    if not db_path:
+        console.print("Persistence not configured. Set --db <path> or persistence_db_path in config.")
+        return 1
+    from waveos.persistence.store import get_store
+    store = get_store(Path(db_path))
+    if not store:
+        console.print(f"Could not open store at {db_path}")
+        return 1
+    limit_runs = getattr(args, "limit", 10)
+    limit_incidents = getattr(args, "incidents", 5)
+    runs = store.get_recent_runs(limit=limit_runs)
+    incidents = store.get_recent_incidents(limit=limit_incidents)
+    rt = Table(title="Recent runs")
+    rt.add_column("run_id", style="cyan")
+    rt.add_column("started_at")
+    rt.add_column("completed_at")
+    rt.add_column("samples")
+    rt.add_column("scores")
+    rt.add_column("actions")
+    for r in runs:
+        rt.add_row(
+            str(r.get("run_id", ""))[:16] + "…" if len(str(r.get("run_id", ""))) > 16 else str(r.get("run_id", "")),
+            str(r.get("started_at", "")),
+            str(r.get("completed_at", "")),
+            str(r.get("sample_count", 0)),
+            str(r.get("score_count", 0)),
+            str(r.get("action_count", 0)),
+        )
+    console.print(rt)
+    it = Table(title="Recent incidents")
+    it.add_column("incident_id", style="cyan")
+    it.add_column("run_id")
+    it.add_column("created_at")
+    it.add_column("severity")
+    it.add_column("summary")
+    for i in incidents:
+        it.add_row(
+            str(i.get("incident_id", ""))[:14] + "…" if len(str(i.get("incident_id", ""))) > 14 else str(i.get("incident_id", "")),
+            str(i.get("run_id", ""))[:16] + "…" if len(str(i.get("run_id", ""))) > 16 else str(i.get("run_id", "")),
+            str(i.get("created_at", "")),
+            str(i.get("severity", "")),
+            (str(i.get("summary", ""))[:50] + "…") if len(str(i.get("summary", ""))) > 50 else str(i.get("summary", "")),
+        )
+    console.print(it)
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    """Single-pane status: active bundle, last runs, fleet, policy (Productization Phase 3 admin view)."""
+    config = getattr(args, "config_obj", None)
+    console.print("[bold]WaveOS status[/bold]")
+    # Active bundle
+    state_dir = Path(getattr(config, "bundle_state_dir", "out/bundles/state") or "out/bundles/state")
+    if state_dir.exists():
+        try:
+            from waveos.update_agent import load_state
+            state = load_state(state_dir)
+            console.print(f"  Active bundle: {state.active_bundle_id or '—'}")
+            if state.canary_bundle_id:
+                console.print(f"  Canary staged: {state.canary_bundle_id}")
+        except Exception:
+            console.print("  Active bundle: —")
+    else:
+        console.print("  Active bundle: —")
+    # Last runs (from persistence)
+    db_path = config and getattr(config, "persistence_db_path", None) or os.getenv("WAVEOS_PERSISTENCE_DB_PATH")
+    if db_path:
+        try:
+            from waveos.persistence.store import get_store
+            store = get_store(Path(db_path))
+            if store:
+                runs = store.get_recent_runs(limit=3)
+                if runs:
+                    console.print(f"  Last runs: {len(runs)} recent (use 'waveos last-runs' for details)")
+                else:
+                    console.print("  Last runs: none")
+            else:
+                console.print("  Last runs: —")
+        except Exception:
+            console.print("  Last runs: —")
+    else:
+        console.print("  Last runs: (persistence not configured)")
+    # Fleet
+    nodes_path = None
+    if config and getattr(config, "state_registry_path", None):
+        nodes_path = Path(config.state_registry_path).parent / "nodes.json"
+    if not nodes_path or not nodes_path.is_file():
+        nodes_path = Path("out/nodes.json")
+    if nodes_path.is_file():
+        try:
+            from waveos.orchestration import get_node_registry, load_nodes_from_file
+            from waveos.node_health import healthy_nodes
+            load_nodes_from_file(nodes_path)
+            reg = get_node_registry()
+            heartbeat_path = nodes_path.parent / "heartbeats.jsonl"
+            if not heartbeat_path.is_file():
+                heartbeat_path = Path("out/heartbeats.jsonl")
+            health = healthy_nodes(heartbeat_path, max_age_seconds=120) if heartbeat_path.is_file() else {}
+            healthy_count = sum(1 for nid in reg if health.get(nid) is True)
+            console.print(f"  Fleet: {len(reg)} nodes ({healthy_count} healthy)")
+        except Exception:
+            console.print("  Fleet: —")
+    else:
+        console.print("  Fleet: (no nodes registry)")
+    # Policy
+    policy_path = config and getattr(config, "policy_templates_path", None)
+    console.print(f"  Policy: {policy_path or 'default'}")
+    return 0
+
+
+def cmd_validate_schema(args: argparse.Namespace) -> int:
+    """Validate telemetry file against schema registry (Data plane Phase 2)."""
+    from waveos.schema_registry import validate_telemetry_schema
+    from waveos.utils import read_json, read_jsonl
+    path = Path(getattr(args, "file", ""))
+    version = getattr(args, "schema_version", "1")
+    if not path.is_file():
+        console.print(f"File not found: {path}")
+        return 1
+    if path.suffix == ".json":
+        data = read_json(path)
+        records = data if isinstance(data, list) else data.get("records", [])
+    else:
+        records = read_jsonl(path)
+    ok, errors = validate_telemetry_schema(records, version=version)
+    if ok:
+        console.print(f"[green]Valid[/green]: {len(records)} records, schema version {version}")
+        return 0
+    for e in errors[:30]:
+        console.print(f"[red]{e}[/red]")
+    if len(errors) > 30:
+        console.print(f"[red]... and {len(errors) - 30} more[/red]")
+    return 1
+
+
+def cmd_change_log(args: argparse.Namespace) -> int:
+    """Show deployment/policy change log (Compliance Phase 3)."""
+    from waveos.change_log import get_recent_changes
+    config = getattr(args, "config_obj", None)
+    path = getattr(args, "path", None)
+    if not path:
+        state_dir = Path(getattr(config, "bundle_state_dir", "out/bundles/state") or "out/bundles/state")
+        path = state_dir / "deployment_changes.jsonl"
+    else:
+        path = Path(path)
+    limit = getattr(args, "limit", 20)
+    entries = get_recent_changes(path, limit=limit)
+    if not entries:
+        console.print("No change log entries (or file not found).")
+        return 0
+    table = Table(title="Change log (newest first)")
+    table.add_column("timestamp_utc", style="dim")
+    table.add_column("event", style="cyan")
+    table.add_column("bundle_id")
+    table.add_column("approver")
+    for e in entries:
+        table.add_row(
+            str(e.get("timestamp_utc", ""))[:19],
+            str(e.get("event", "")),
+            str(e.get("bundle_id", "—")),
+            str(e.get("approver", "—")),
+        )
+    console.print(table)
+    return 0
+
+
+def cmd_verify_evidence_attestation(args: argparse.Namespace) -> int:
+    """Verify evidence_attestation.json artifact hashes (Persistence Phase 3)."""
+    from waveos.reporting import verify_evidence_attestation
+    path = Path(getattr(args, "path", ""))
+    if path.is_dir():
+        path = path / "evidence_attestation.json"
+    ok, errors = verify_evidence_attestation(path)
+    if ok:
+        console.print("[green]Attestation verified.[/green]")
+        return 0
+    for e in errors:
+        console.print(f"[red]{e}[/red]")
+    return 1
+
+
+def cmd_policy_lint(args: argparse.Namespace) -> int:
+    """Validate policy template file against schema (Policy Phase 2)."""
+    from waveos.policy.schema import validate_policy_file
+    path = Path(getattr(args, "file", ""))
+    ok, errors = validate_policy_file(path)
+    if ok:
+        console.print(f"[green]Valid[/green]: {path}")
+        return 0
+    for e in errors:
+        console.print(f"[red]{e}[/red]")
+    return 1
+
+
+def cmd_access_review_export(args: argparse.Namespace) -> int:
+    """Export RBAC roles, permissions, and token assignment summary for access review (Compliance Phase 2)."""
+    from waveos.utils.rbac import ROLE_PERMISSIONS, PERMISSION_CLEARANCE, Role
+    from waveos.utils.auth import load_token_roles_from_env, load_token_roles_from_config
+    config = getattr(args, "config_obj", None)
+    out_path = Path(args.out)
+    roles_export = []
+    for role in Role:
+        perms = ROLE_PERMISSIONS.get(role, [])
+        roles_export.append({
+            "role": role.value,
+            "permissions": [p.value for p in perms],
+        })
+    clearance_export = {p.value: c.value for p, c in (PERMISSION_CLEARANCE or {}).items()}
+    token_roles_from_config = {}
+    if config and getattr(config, "auth_tokens", None):
+        token_roles_from_config = dict(config.auth_tokens)
+    token_roles_from_env = load_token_roles_from_env()
+    roles_from_config = set(token_roles_from_config.values())
+    roles_from_env = {r.value for r in token_roles_from_env.values()}
+    export = {
+        "roles": roles_export,
+        "permission_clearance": clearance_export,
+        "token_assignments": {
+            "from_config_count": len(token_roles_from_config),
+            "from_env_count": len(token_roles_from_env),
+            "roles_granted": list(sorted(roles_from_config | roles_from_env)),
+        },
+    }
+    write_json(out_path, export)
+    console.print(f"Access review export written to {out_path}")
     return 0
 
 
@@ -832,6 +1397,7 @@ def _authorize(args: argparse.Namespace, permission: Permission, action: str | N
             },
             max_bytes=config.audit_max_bytes,
             max_files=config.audit_max_files,
+            hash_chain=getattr(config, "audit_hash_chain", False),
         )
     return allowed
 
@@ -865,6 +1431,24 @@ def build_parser() -> argparse.ArgumentParser:
     schedule_parser.add_argument("--every", type=int, required=True, help="Seconds between runs")
     schedule_parser.add_argument("--count", type=int, default=1, help="Number of runs to execute")
     schedule_parser.set_defaults(func=cmd_schedule)
+
+    soak_test_parser = sub.add_parser("soak-test", help="Run pipeline repeatedly for stability (SRE Phase 3)")
+    soak_test_parser.add_argument("--in", required=True, dest="input")
+    soak_test_parser.add_argument("--baseline", required=True)
+    soak_test_parser.add_argument("--out", required=True, dest="output")
+    soak_test_parser.add_argument("--runs", type=int, default=5, help="Number of runs")
+    soak_test_parser.add_argument("--every", type=int, default=10, help="Seconds between runs")
+    soak_test_parser.add_argument("--min-success", type=int, help="Require at least N successful runs to pass")
+    soak_test_parser.set_defaults(func=cmd_soak_test)
+
+    ingest_mqtt_parser = sub.add_parser("ingest-mqtt", help="Pull telemetry from MQTT topic and write to file (Data plane Phase 1)")
+    ingest_mqtt_parser.add_argument("--broker", required=True, help="MQTT broker host (e.g. localhost or hostname)")
+    ingest_mqtt_parser.add_argument("--topic", required=True, help="Topic to subscribe to")
+    ingest_mqtt_parser.add_argument("--out", required=True, dest="output", help="Output path (e.g. out/telemetry.jsonl)")
+    ingest_mqtt_parser.add_argument("--timeout", type=float, default=30.0, help="Seconds to collect (default 30)")
+    ingest_mqtt_parser.add_argument("--max-messages", type=int, default=1000, help="Max messages to collect")
+    ingest_mqtt_parser.add_argument("--port", type=int, default=1883, help="Broker port")
+    ingest_mqtt_parser.set_defaults(func=cmd_ingest_mqtt)
 
     supervise_parser = sub.add_parser("supervise", help="Supervise a child process")
     supervise_parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -921,7 +1505,64 @@ def build_parser() -> argparse.ArgumentParser:
 
     list_nodes_parser = sub.add_parser("list-nodes", help="List registered orchestration nodes (V3)")
     list_nodes_parser.add_argument("--file", help="Path to nodes JSON file (default: from env or out/nodes.json)")
+    list_nodes_parser.add_argument("--canary-sites", help="Only list nodes in these site IDs (comma-separated; Fleet Phase 2)")
+    list_nodes_parser.add_argument("--sites", help="Only list nodes in these site IDs (comma-separated)")
     list_nodes_parser.set_defaults(func=cmd_list_nodes)
+
+    fleet_status_parser = sub.add_parser("fleet-status", help="Fleet status: nodes + health from heartbeats")
+    fleet_status_parser.add_argument("--file", help="Path to nodes JSON (default: out/nodes.json)")
+    fleet_status_parser.add_argument("--max-age-seconds", type=int, default=120, help="Heartbeat max age for healthy")
+    fleet_status_parser.set_defaults(func=cmd_fleet_status)
+
+    runbook_parser = sub.add_parser("runbook", help="SRE runbooks: list or run")
+    runbook_sub = runbook_parser.add_subparsers(dest="runbook_command")
+    runbook_list_parser = runbook_sub.add_parser("list", help="List available runbooks")
+    runbook_list_parser.set_defaults(func=cmd_runbook_list)
+    runbook_run_parser = runbook_sub.add_parser("run", help="Run a runbook (steps shown)")
+    runbook_run_parser.add_argument("runbook_id", help="Runbook id (e.g. telemetry_stale, actuator_down)")
+    runbook_run_parser.set_defaults(func=cmd_runbook_run)
+
+    policy_parser = sub.add_parser("policy", help="Policy schema and lint (Policy Phase 2)")
+    policy_sub = policy_parser.add_subparsers(dest="policy_command")
+    policy_lint_parser = policy_sub.add_parser("lint", help="Validate policy template file against schema")
+    policy_lint_parser.add_argument("file", help="Path to policy JSON file")
+    policy_lint_parser.set_defaults(func=cmd_policy_lint)
+
+    access_review_parser = sub.add_parser("access-review-export", help="Export RBAC access review (Compliance Phase 2)")
+    access_review_parser.add_argument("--out", required=True, help="Output JSON path")
+    access_review_parser.set_defaults(func=cmd_access_review_export)
+
+    install_parser = sub.add_parser("install", help="One-command install: create out dirs and optional config example")
+    install_parser.add_argument("--prefix", default=".", help="Installation prefix (default: .)")
+    install_parser.add_argument("--config", dest="config_example", action="store_true", help="Write out/config.toml.example")
+    install_parser.set_defaults(func=cmd_install)
+
+    migrate_parser = sub.add_parser("migrate", help="Ensure persistence DB schema is current")
+    migrate_parser.add_argument("--db", help="Path to SQLite DB (default: from config persistence_db_path)")
+    migrate_parser.set_defaults(func=cmd_migrate)
+
+    last_runs_parser = sub.add_parser("last-runs", help="Show recent runs and incidents from persistence (admin view)")
+    last_runs_parser.add_argument("--db", help="Path to SQLite DB (default: from config)")
+    last_runs_parser.add_argument("--limit", type=int, default=10, help="Max runs to show")
+    last_runs_parser.add_argument("--incidents", type=int, default=5, help="Max incidents to show")
+    last_runs_parser.set_defaults(func=cmd_last_runs)
+
+    status_parser = sub.add_parser("status", help="Single-pane status: bundle, last runs, fleet, policy (admin view)")
+    status_parser.set_defaults(func=cmd_status)
+
+    verify_attestation_parser = sub.add_parser("verify-evidence-attestation", help="Verify evidence pack attestation hashes (Persistence Phase 3)")
+    verify_attestation_parser.add_argument("path", help="Path to evidence_attestation.json (or run output dir)")
+    verify_attestation_parser.set_defaults(func=cmd_verify_evidence_attestation)
+
+    change_log_parser = sub.add_parser("change-log", help="Show deployment/policy change log (Compliance Phase 3)")
+    change_log_parser.add_argument("--path", help="Path to deployment_changes.jsonl (default: <bundle_state_dir>/deployment_changes.jsonl)")
+    change_log_parser.add_argument("--limit", type=int, default=20, help="Max entries to show")
+    change_log_parser.set_defaults(func=cmd_change_log)
+
+    validate_schema_parser = sub.add_parser("validate-schema", help="Validate telemetry file against schema registry (Data plane Phase 2)")
+    validate_schema_parser.add_argument("file", help="Path to telemetry JSON/JSONL file")
+    validate_schema_parser.add_argument("--schema-version", dest="schema_version", default="1", help="Schema version (default: 1)")
+    validate_schema_parser.set_defaults(func=cmd_validate_schema)
 
     compliance_report_parser = sub.add_parser("compliance-report", help="Generate compliance report (V3)")
     compliance_report_parser.add_argument("--framework", choices=["NERC", "SOC2", "DoD"], default="NERC")
@@ -982,11 +1623,13 @@ def main() -> None:
         console.print(f"Invalid configuration: {exc}")
         raise SystemExit(2)
     args.config_obj = config
+    set_strict_secrets(config.strict_secrets)
     level = getattr(logging, config.log_level.upper(), logging.INFO)
     setup_logging(level=level, log_format=config.log_format, spool_path=Path(config.log_spool_path) if config.log_spool_path else None)
     drop_privileges(config.drop_privileges_user, config.drop_privileges_group)
     apply_resource_limits(config.max_memory_mb, config.max_cpu_seconds)
     start_metrics_server(config.metrics_port)
+    start_health_server(getattr(config, "health_http_port", None), config)
     init_tracer(endpoint=config.otel_endpoint)
     if config.proxy_enabled and config.proxy_mode:
         start_proxy(

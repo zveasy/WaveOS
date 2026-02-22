@@ -68,6 +68,19 @@ def load_nodes_from_file(path: Path) -> int:
         return 0
 
 
+def get_nodes_by_site(site_id: str) -> List[NodeRecord]:
+    """Return all nodes with the given site_id (Fleet Phase 2: canary by site)."""
+    return [r for r in _registry.values() if r.site_id == site_id]
+
+
+def get_nodes_in_sites(site_ids: List[str]) -> List[NodeRecord]:
+    """Return all nodes whose site_id is in the given list (for canary-by-site deploy)."""
+    if not site_ids:
+        return list(_registry.values())
+    s = set(site_ids)
+    return [r for r in _registry.values() if r.site_id in s]
+
+
 def save_nodes_to_file(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     nodes = []

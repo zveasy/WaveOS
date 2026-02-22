@@ -25,7 +25,7 @@ def _get_fernet():
         from cryptography.fernet import Fernet
         _FERNET = Fernet(key.encode("utf-8"))
         return _FERNET
-    except Exception as exc:
+    except (ImportError, ValueError, TypeError) as exc:
         logger.warning("Encryption not available: %s", type(exc).__name__)
         _FERNET = False
         return None
@@ -38,7 +38,8 @@ def encrypt_bytes(data: bytes) -> Optional[bytes]:
         return None
     try:
         return _MAGIC + f.encrypt(data)
-    except Exception:
+    except (ValueError, TypeError) as exc:
+        logger.debug("Encrypt failed: %s", type(exc).__name__)
         return None
 
 
@@ -51,7 +52,8 @@ def decrypt_bytes(data: bytes) -> Optional[bytes]:
         return None
     try:
         return f.decrypt(data[len(_MAGIC):])
-    except Exception:
+    except (ValueError, TypeError) as exc:
+        logger.debug("Decrypt failed: %s", type(exc).__name__)
         return None
 
 
@@ -75,10 +77,16 @@ def read_json_encrypted(path: Path) -> Optional[Any]:
     """Read JSON from path or path.enc (decrypt if encrypted)."""
     enc_path = path.with_suffix(path.suffix + ".enc")
     if enc_path.exists():
-        raw = decrypt_bytes(enc_path.read_bytes())
-        if raw is not None:
-            return json.loads(raw.decode("utf-8"))
+        try:
+            raw = decrypt_bytes(enc_path.read_bytes())
+            if raw is not None:
+                return json.loads(raw.decode("utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.debug("Read encrypted JSON failed: %s", type(exc).__name__)
     from waveos.utils.io import read_json
     if path.exists():
-        return read_json(path)
+        try:
+            return read_json(path)
+        except (OSError, json.JSONDecodeError):
+            pass
     return None

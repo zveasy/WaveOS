@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
-from waveos.utils import utc_now
+from waveos.utils import get_logger, utc_now
+
+logger = get_logger("waveos.bundle")
 
 
 @dataclass
@@ -120,16 +122,24 @@ def verify_manifest(bundle_dir: Path, hmac_key: str) -> bool:
     sig_path = bundle_dir / "bundle.sig"
     if not manifest_path.exists() or not sig_path.exists():
         return False
-    expected = sig_path.read_text(encoding="utf-8").strip()
-    actual = hmac.new(hmac_key.encode("utf-8"), manifest_path.read_bytes(), hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, actual)
+    try:
+        expected = sig_path.read_text(encoding="utf-8").strip()
+        actual = hmac.new(hmac_key.encode("utf-8"), manifest_path.read_bytes(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, actual)
+    except OSError as exc:
+        logger.debug("Verify manifest read failed: %s", exc)
+        return False
 
 
 def _get_fernet_for_bundle(key: str):
     try:
         from cryptography.fernet import Fernet
         return Fernet(key.encode("utf-8"))
-    except Exception:
+    except ImportError as exc:
+        logger.debug("Encryption not available: %s", exc)
+        return None
+    except (ValueError, TypeError) as exc:
+        logger.debug("Invalid Fernet key: %s", type(exc).__name__)
         return None
 
 
@@ -144,7 +154,8 @@ def encrypt_bundle_artifacts(bundle_dir: Path, encryption_key: str) -> bool:
             enc = f.encrypt(raw)
             path.with_suffix(path.suffix + ".enc").write_bytes(enc)
             path.unlink()
-        except Exception:
+        except (OSError, ValueError) as exc:
+            logger.warning("Encrypt artifact failed for %s: %s", path, type(exc).__name__)
             return False
     return True
 
@@ -163,7 +174,8 @@ def decrypt_bundle_artifacts(bundle_dir: Path, encryption_key: str) -> bool:
             plain_path = path.with_suffix("")  # e.g. policy.json.enc -> policy.json
             plain_path.write_bytes(dec)
             path.unlink()
-        except Exception:
+        except (OSError, ValueError) as exc:
+            logger.warning("Decrypt artifact failed for %s: %s", path, type(exc).__name__)
             return False
     return True
 
@@ -175,5 +187,6 @@ def bundle_has_encrypted_artifacts(bundle_dir: Path) -> bool:
     try:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         return payload.get("encrypted_artifacts") is True
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError) as exc:
+        logger.debug("Could not read bundle manifest for encrypted_artifacts: %s", type(exc).__name__)
         return False

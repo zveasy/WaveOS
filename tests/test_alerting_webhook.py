@@ -18,12 +18,12 @@ def test_send_webhook_retries_until_success() -> None:
         return result
 
     with patch("urllib.request.urlopen", side_effect=_side_effect) as mocked:
-        send_webhook("http://example.com", {"ok": True}, retries=2)
+        send_webhook("https://example.com/webhook", {"ok": True}, retries=2)
         assert mocked.call_count == 3
 
 
 def test_route_alerts_calls_webhook() -> None:
-    routes = [AlertRoute(name="web", destination="webhook", url="http://example.com")]
+    routes = [AlertRoute(name="web", destination="webhook", url="https://example.com/webhook")]
     events = [{"level": "WARN"}]
     with patch("waveos.utils.alerting.send_webhook") as mocked:
         route_alerts(events, routes, run_id="run-1")
@@ -45,9 +45,9 @@ def test_route_alerts_calls_slack_and_email() -> None:
 
 def test_send_slack_formats_message() -> None:
     with patch("waveos.utils.alert_integrations.send_webhook") as mocked:
-        send_slack("http://example.com", {"run_id": "run-1"})
+        send_slack("https://hooks.slack.com/services/test", {"run_id": "run-1"})
         args, _ = mocked.call_args
-        assert args[0] == "http://example.com"
+        assert args[0] == "https://hooks.slack.com/services/test"
         assert "text" in args[1]
 
 

@@ -37,6 +37,7 @@ def recommend_actions(
                             entity_id=score.entity_id,
                             rationale="Link health is FAIL; recommend reroute.",
                             parameters={"priority": "high"},
+                            rule_id="health_fail_reroute",
                         )
                     )
                 if enable_rate_limit:
@@ -47,6 +48,7 @@ def recommend_actions(
                             entity_id=score.entity_id,
                             rationale="Degraded link; reduce load to stabilize.",
                             parameters={"limit_pct": 60},
+                            rule_id="health_fail_rate_limit",
                         )
                     )
             if score.status == HealthStatus.WARN and enable_qos:
@@ -57,6 +59,7 @@ def recommend_actions(
                         entity_id=score.entity_id,
                         rationale="Moderate drift detected; prioritize critical traffic.",
                         parameters={"class": "gold"},
+                        rule_id="health_warn_qos",
                     )
                 )
             if any("temperature" in driver for driver in score.drivers) and enable_thermal:
@@ -67,6 +70,7 @@ def recommend_actions(
                         entity_id=score.entity_id,
                         rationale="Temperature drift detected; apply thermal constraints.",
                         parameters={"max_temp_c": 75},
+                        rule_id="thermal_constraint",
                     )
                 )
             actions.extend(_apply_policy_rules(score, policy_rules or []))
@@ -97,6 +101,7 @@ def _apply_policy_rules(score: HealthScore, rules: List[Dict[str, Any]]) -> List
                     action = ActionType(action)
                 except ValueError:
                     action = ActionType.RATE_LIMIT
+            rule_id = rule.get("id") or f"policy_rule_{metric}_{operator}"
             results.append(
                 ActionRecommendation(
                     action=action,
@@ -104,6 +109,7 @@ def _apply_policy_rules(score: HealthScore, rules: List[Dict[str, Any]]) -> List
                     entity_id=score.entity_id,
                     rationale=rule.get("message", "Policy rule triggered."),
                     parameters=rule.get("parameters", {}),
+                    rule_id=rule_id,
                 )
             )
     return results

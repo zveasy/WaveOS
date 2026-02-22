@@ -9,13 +9,19 @@ import argparse
 
 
 def test_cleanup_removes_old_files(tmp_path: Path) -> None:
+    # Path validation requires cleanup path to be under WAVEOS_CLEANUP_ALLOWED_BASE (default cwd).
+    os.environ["WAVEOS_CLEANUP_ALLOWED_BASE"] = str(tmp_path)
     old_file = tmp_path / "old.txt"
     new_file = tmp_path / "new.txt"
-    old_file.write_text("old", encoding="utf-8")
-    new_file.write_text("new", encoding="utf-8")
-    old_mtime = time.time() - (10 * 86400)
-    os.utime(old_file, (old_mtime, old_mtime))
-    args = argparse.Namespace(path=str(tmp_path), days=5)
-    cmd_cleanup(args)
-    assert not old_file.exists()
-    assert new_file.exists()
+    os.environ["WAVEOS_CLEANUP_ALLOWED_BASE"] = str(tmp_path)
+    try:
+        old_file.write_text("old", encoding="utf-8")
+        new_file.write_text("new", encoding="utf-8")
+        old_mtime = time.time() - (10 * 86400)
+        os.utime(old_file, (old_mtime, old_mtime))
+        args = argparse.Namespace(path=str(tmp_path), days=5)
+        cmd_cleanup(args)
+        assert not old_file.exists()
+        assert new_file.exists()
+    finally:
+        os.environ.pop("WAVEOS_CLEANUP_ALLOWED_BASE", None)
