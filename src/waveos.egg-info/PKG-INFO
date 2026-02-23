@@ -25,6 +25,13 @@ Provides-Extra: otel
 Requires-Dist: opentelemetry-exporter-otlp>=1.25; extra == "otel"
 Provides-Extra: encryption
 Requires-Dist: cryptography>=42.0; extra == "encryption"
+Provides-Extra: ocpp
+Requires-Dist: ocpp>=0.14.0; extra == "ocpp"
+Requires-Dist: websockets>=12.0; extra == "ocpp"
+Provides-Extra: modbus
+Requires-Dist: pymodbus>=3.0.0; extra == "modbus"
+Provides-Extra: mqtt
+Requires-Dist: paho-mqtt>=2.0; extra == "mqtt"
 Dynamic: license-file
 
 Here’s a **clean, founder-grade README** you can drop straight into the repo.

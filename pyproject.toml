@@ -72,7 +72,8 @@ ignore = ["E501"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-filterwarnings = ["ignore::DeprecationWarning"]
+filterwarnings = ["ignore::DeprecationWarning", "ignore:Unknown config option:pytest.PytestConfigWarning"]
+asyncio_default_fixture_loop_scope = "function"
 
 [tool.coverage.run]
 source = ["src/waveos"]

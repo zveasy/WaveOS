@@ -13,11 +13,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+def _waveos_cmd() -> list[str]:
+    """Return [waveos, ...] if waveos is on PATH, else [sys.executable, -m, waveos] so subprocess finds the package."""
+    if shutil.which("waveos"):
+        return ["waveos"]
+    return [sys.executable, "-m", "waveos"]
 
 
 def _write_report(report: dict, path: str, write_md: bool = True) -> None:
@@ -71,21 +79,30 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.mode == "pipeline":
+        cmd_base = _waveos_cmd()
+        env = os.environ.copy()
+        env.setdefault("WAVEOS_LICENSE_KEY", "WAVEOS-CI-20991231-TEST")
         started = datetime.now(timezone.utc).isoformat()
         t0 = time.perf_counter()
         success_count = 0
         failure_count = 0
-        for i in range(args.iterations):
-            out = os.path.join(args.out, f"run_{i}")
-            rc = subprocess.call([
-                sys.executable, "-m", "waveos", "run",
-                "--in", args.input, "--baseline", args.baseline, "--out", out,
-            ], timeout=120)
-            if rc == 0:
-                success_count += 1
-            else:
-                failure_count += 1
-                print(f"Run {i} failed with exit {rc}")
+        completed = 0
+        try:
+            for i in range(args.iterations):
+                out = os.path.join(args.out, f"run_{i}")
+                rc = subprocess.call(
+                    [*cmd_base, "run", "--in", args.input, "--baseline", args.baseline, "--out", out],
+                    timeout=120,
+                    env=env,
+                )
+                completed = i + 1
+                if rc == 0:
+                    success_count += 1
+                else:
+                    failure_count += 1
+                    print(f"Run {i} failed with exit {rc}")
+        except KeyboardInterrupt:
+            print("\nSoak interrupted (Ctrl+C); writing partial report.")
         duration_sec = round(time.perf_counter() - t0, 2)
         ended = datetime.now(timezone.utc).isoformat()
         report = {
@@ -93,7 +110,7 @@ def main() -> int:
             "started_at": started,
             "ended_at": ended,
             "duration_sec": duration_sec,
-            "run_count": args.iterations,
+            "run_count": completed,
             "success_count": success_count,
             "failure_count": failure_count,
             "recovery_behavior": "All runs completed in-process; no coordinator/agent restart during soak."
@@ -101,16 +118,18 @@ def main() -> int:
         }
         if getattr(args, "report", None):
             _write_report(report, args.report)
-        print(f"Soak pipeline: {success_count}/{args.iterations} ok in {duration_sec}s")
+        print(f"Soak pipeline: {success_count}/{completed} ok in {duration_sec}s")
         return 0 if failure_count == 0 else 1
 
     if args.mode == "agent":
         started = datetime.now(timezone.utc).isoformat()
         t0 = time.perf_counter()
         env = os.environ.copy()
+        env.setdefault("WAVEOS_LICENSE_KEY", "WAVEOS-CI-20991231-TEST")
         env["WAVEOS_AGENT_INTERVAL_SEC"] = str(args.interval)
+        cmd_base = _waveos_cmd()
         proc = subprocess.Popen(
-            [sys.executable, "-m", "waveos", "agent", "--interval", str(args.interval)],
+            [*cmd_base, "agent", "--interval", str(args.interval)],
             env=env,
         )
         exit_reason = "completed"
