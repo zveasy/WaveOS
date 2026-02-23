@@ -1,5 +1,8 @@
 from waveos.models.core import (
+    ActionOutcome,
     ActionRecommendation,
+    ActionState,
+    ActionTransaction,
     ActionType,
     BaselineStats,
     Event,
@@ -15,7 +18,10 @@ from waveos.models.core import (
 )
 
 __all__ = [
+    "ActionOutcome",
     "ActionRecommendation",
+    "ActionState",
+    "ActionTransaction",
     "ActionType",
     "BaselineStats",
     "Event",

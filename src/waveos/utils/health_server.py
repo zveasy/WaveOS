@@ -25,6 +25,37 @@ _httpd: Optional[HTTPServer] = None
 _server_thread: Optional[threading.Thread] = None
 
 
+def _check_actuator_reachability() -> Dict[str, Any]:
+    """Check actuator connectivity (Implementation Priorities §6). HTTPS only, no private IPs."""
+    url = os.getenv("WAVEOS_ACTUATOR_SDN_URL", "").strip()
+    if not url or not url.lower().startswith("https://"):
+        return {"ok": True, "message": "no actuator URL to check"}
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, method="HEAD")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            return {"ok": resp.status < 500, "message": f"HTTP {resp.status}"}
+    except Exception as exc:
+        return {"ok": False, "message": str(type(exc).__name__)}
+
+
+def _check_telemetry_freshness(config: Any) -> Dict[str, Any]:
+    """Check ingest freshness: last run output or telemetry file mtime (Implementation Priorities §6)."""
+    out = {"ok": True, "message": "no path to check"}
+    path = os.getenv("WAVEOS_TELEMETRY_FRESHNESS_PATH", "").strip()
+    if path:
+        p = Path(path).expanduser()
+        if p.exists():
+            age_sec = (__import__("time").time() - p.stat().st_mtime)
+            max_stale = int(os.getenv("WAVEOS_TELEMETRY_MAX_STALE_SEC", "600"))
+            out["ok"] = age_sec <= max_stale
+            out["message"] = f"age_sec={age_sec:.0f} max_stale={max_stale}"
+        else:
+            out["ok"] = False
+            out["message"] = "path missing"
+    return out
+
+
 def _readiness_checks(config: Any) -> Dict[str, Any]:
     """Run real checks; return dict of check_name -> {ok: bool, message: str}."""
     out: Dict[str, Any] = {}
@@ -37,9 +68,11 @@ def _readiness_checks(config: Any) -> Dict[str, Any]:
     if getattr(config, "state_registry_path", None):
         p = Path(config.state_registry_path).expanduser()
         out["state_registry"] = {"ok": p.parent.exists(), "message": str(p.parent)}
-    # Actuator: if enforce_actions, actuator class or default should be loadable
+    # Actuator: if enforce_actions, check actuator reachability when URL is set
     if getattr(config, "enforce_actions", False):
-        out["actuator"] = {"ok": True, "message": "enforce_actions enabled"}
+        out["actuator"] = _check_actuator_reachability()
+    # Telemetry freshness (optional: set WAVEOS_TELEMETRY_FRESHNESS_PATH to a file that should be recent)
+    out["telemetry_freshness"] = _check_telemetry_freshness(config)
     return out
 
 

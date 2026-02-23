@@ -5,6 +5,8 @@ Wave OS supports config via:
 - `WAVEOS_CONFIG` environment variable
 - Environment variables (override file)
 
+**Production profile:** Use `configs/production.toml` to turn on production defaults (action signing required, strict secrets, enforcement lock paths, safe drift strategy). For the coordinator, source `configs/coordinator.production.env` before `waveos coordinator serve`. See `configs/README.md`.
+
 ## Supported keys
 - `log_format`: `json` or `text`
 - `log_level`: `INFO`, `DEBUG`, etc.

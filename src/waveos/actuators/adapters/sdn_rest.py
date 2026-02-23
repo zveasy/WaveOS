@@ -104,7 +104,34 @@ class SdnRestAdapter(DeviceAdapterBase):
                 code = resp.status
                 body = resp.read().decode("utf-8", errors="replace") if resp.length else ""
             if 200 <= code < 300:
-                return AdapterResult(action=action, outcome=AdapterOutcome.SUCCEEDED, ack=True, message=body[:200] if body else None)
+                # Optional state read-back: GET state URL to confirm device state changed (Implementation Priorities §1)
+                actual_state = self._read_state_after(action, timeout_seconds)
+                return AdapterResult(
+                    action=action, outcome=AdapterOutcome.SUCCEEDED, ack=True,
+                    message=body[:200] if body else None, actual_state=actual_state,
+                )
             return AdapterResult(action=action, outcome=AdapterOutcome.NO_EFFECT, ack=True, message=f"HTTP {code}")
         except Exception as exc:
             return AdapterResult(action=action, outcome=AdapterOutcome.UNKNOWN, ack=False, message=str(exc)[:200])
+
+    def _read_state_after(self, action: ActionRecommendation, timeout_seconds: float) -> Optional[Dict[str, Any]]:
+        """Optional: GET state URL (WAVEOS_ACTUATOR_SDN_STATE_URL or env per entity) to confirm device state."""
+        state_url = (
+            os.getenv("WAVEOS_ACTUATOR_SDN_STATE_URL", "").strip()
+            or os.getenv(f"WAVEOS_ACTUATOR_SDN_STATE_URL_{action.entity_id.replace('-', '_').upper()}", "").strip()
+        )
+        if not state_url:
+            return None
+        try:
+            req = urllib.request.Request(state_url, method="GET")
+            kwargs: Dict[str, Any] = {"timeout": min(timeout_seconds, 3.0)}
+            if self._ssl_context and state_url.lower().startswith("https"):
+                kwargs["context"] = self._ssl_context
+            with urllib.request.urlopen(req, **kwargs) as resp:
+                if resp.status != 200:
+                    return None
+                body = resp.read().decode("utf-8", errors="replace")
+                data = json.loads(body) if body.strip() else {}
+                return {"state_url": state_url, "response": data} if isinstance(data, dict) else {"state_url": state_url, "response": body[:500]}
+        except Exception:
+            return None

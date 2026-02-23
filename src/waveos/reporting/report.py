@@ -23,6 +23,7 @@ ATTESTATION_ARTIFACTS = (
     "report.html",
     "metrics.csv",
 )
+ACTION_SIGNING_EVIDENCE_FILENAME = "action_signing_evidence.json"
 
 
 def write_outputs(
@@ -36,8 +37,12 @@ def write_outputs(
     run_stats: Optional[Iterable[RunStats]] = None,
     evidence_pack_enabled: bool = True,
     encrypt_artifacts: bool = False,
+    action_outcomes: Optional[List[dict]] = None,
+    action_signing_evidence: Optional[dict] = None,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
+    if action_signing_evidence is not None:
+        write_json(out_dir / ACTION_SIGNING_EVIDENCE_FILENAME, action_signing_evidence)
     health_payload = [score.model_dump() for score in health_scores]
     events_payload = [event.model_dump() for event in events]
     actions_payload = [action.model_dump() for action in actions]
@@ -84,7 +89,10 @@ def write_outputs(
         if rows:
             write_csv(metrics_path, rows, fieldnames=list(rows[0].keys()))
 
-    report_path = render_report(out_dir, health_payload, events_payload, actions_payload, run_id=run_id)
+    report_path = render_report(
+        out_dir, health_payload, events_payload, actions_payload,
+        run_id=run_id, action_outcomes=action_outcomes,
+    )
     if evidence_pack_enabled:
         build_evidence_attestation(out_dir, run_id)
         _export_evidence_pack(out_dir, run_id)
@@ -102,6 +110,8 @@ def build_evidence_attestation(out_dir: Path, run_id: str | None = None) -> Path
         p = out_dir / name
         if p.is_file():
             artifacts.append({"path": name, "sha256": _sha256_file(p)})
+    if (out_dir / ACTION_SIGNING_EVIDENCE_FILENAME).is_file():
+        artifacts.append({"path": ACTION_SIGNING_EVIDENCE_FILENAME, "sha256": _sha256_file(out_dir / ACTION_SIGNING_EVIDENCE_FILENAME)})
     payload: Dict[str, Any] = {
         "schema_version": 1,
         "run_id": run_id,
@@ -175,6 +185,7 @@ def render_report(
     events_payload: List[dict],
     actions_payload: List[dict],
     run_id: str | None = None,
+    action_outcomes: Optional[List[dict]] = None,
 ) -> Path:
     templates_dir = Path(__file__).parent / "templates"
     env = Environment(loader=FileSystemLoader(templates_dir), autoescape=True)
@@ -188,6 +199,7 @@ def render_report(
             health_scores=health_payload,
             events=events_payload,
             actions=actions_payload,
+            action_outcomes=action_outcomes or [],
         )
     report_path = out_dir / "report.html"
     report_path.write_text(html, encoding="utf-8")

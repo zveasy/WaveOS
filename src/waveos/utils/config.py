@@ -124,11 +124,19 @@ class WaveOSConfig(BaseModel):
     actuator_mtls_cert_path: Optional[str] = None
     actuator_mtls_key_path: Optional[str] = None
     actuator_mtls_ca_path: Optional[str] = None
+    # Action signing (control-plane hardened): coordinator signs, agent verifies
+    action_signing_required: bool = False
+    action_signing_key_secret: Optional[str] = None  # secret name for WAVEOS_ACTION_SIGNING_KEY
+    # Escalation lock: when set, enforcement is locked or requires approval (incident escalation)
+    enforcement_locked_path: Optional[str] = None  # if file exists and content "locked", skip actuation
+    enforcement_require_approval_path: Optional[str] = None  # if set, require approval file for actuation
     # Persistence (area 6): durable storage for runs, events, actions
     persistence_enabled: bool = False
     persistence_db_path: Optional[str] = None  # SQLite path, e.g. out/waveos.db
     # SRE (area 8): health/readiness HTTP
     health_http_port: Optional[int] = None  # GET /health, GET /ready (liveness/readiness)
+    # Desired-state reconciliation: default drift strategy (apply | alert_only | fallback_safe). Production: fallback_safe.
+    drift_strategy_default: Optional[str] = None
 
 
 # Maximum config file size (bytes) to avoid OOM when loading. Default 1 MB.
@@ -258,9 +266,14 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         "actuator_mtls_cert_path": os.getenv("WAVEOS_ACTUATOR_MTLS_CERT_PATH"),
         "actuator_mtls_key_path": os.getenv("WAVEOS_ACTUATOR_MTLS_KEY_PATH"),
         "actuator_mtls_ca_path": os.getenv("WAVEOS_ACTUATOR_MTLS_CA_PATH"),
+        "action_signing_required": os.getenv("WAVEOS_ACTION_SIGNING_REQUIRED"),
+        "action_signing_key_secret": os.getenv("WAVEOS_ACTION_SIGNING_KEY_SECRET"),
+        "enforcement_locked_path": os.getenv("WAVEOS_ENFORCEMENT_LOCKED_PATH"),
+        "enforcement_require_approval_path": os.getenv("WAVEOS_ENFORCEMENT_REQUIRE_APPROVAL_PATH"),
         "persistence_enabled": os.getenv("WAVEOS_PERSISTENCE_ENABLED"),
         "persistence_db_path": os.getenv("WAVEOS_PERSISTENCE_DB_PATH"),
         "health_http_port": os.getenv("WAVEOS_HEALTH_HTTP_PORT"),
+        "drift_strategy_default": os.getenv("WAVEOS_DRIFT_STRATEGY_DEFAULT"),
     }
     env = {key: value for key, value in env.items() if value is not None}
     if "metrics_port" in env:
@@ -371,6 +384,8 @@ def load_config(path: Optional[Path] = None) -> WaveOSConfig:
         env["actuation_approval_required_types"] = [
             t.strip() for t in str(env["actuation_approval_required_types"]).split(",") if t.strip()
         ]
+    if "action_signing_required" in env and env["action_signing_required"] is not None:
+        env["action_signing_required"] = str(env["action_signing_required"]).lower() in {"1", "true", "yes", "on"}
     if "persistence_enabled" in env and env["persistence_enabled"] is not None:
         env["persistence_enabled"] = str(env["persistence_enabled"]).lower() in {"1", "true", "yes", "on"}
     if "strict_secrets" in env and env["strict_secrets"] is not None:

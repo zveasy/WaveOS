@@ -8,7 +8,7 @@ and writes to common SunSpec/register map (e.g. power limit, curtailment). Other
 from __future__ import annotations
 
 import os
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 from waveos.models import ActionRecommendation, ActionType
 
@@ -47,6 +47,27 @@ def _write_power_limit_sync(host: str, port: int, unit_id: int, limit_kw: float,
             client.close()
     except Exception as exc:
         return False, str(exc)[:200]
+
+
+def _read_power_limit_sync(host: str, port: int, unit_id: int, register: int, timeout: float) -> Optional[Dict[str, Any]]:
+    """Read power limit register (state read-back). Returns dict with limit_kw or None."""
+    if not _PYMODBUS_AVAILABLE:
+        return None
+    try:
+        client = ModbusTcpClient(host=host, port=port, timeout=timeout)
+        client.connect()
+        try:
+            reg_addr = (register - 40000) if register >= 40000 else register
+            result = client.read_holding_registers(reg_addr, 1, slave=unit_id)
+            if result.isError():
+                return None
+            val = result.registers[0] if result.registers else 0
+            limit_kw = val * 0.1  # SunSpec 0.1 kW units
+            return {"power_limit_kw": limit_kw, "register_value": val}
+        finally:
+            client.close()
+    except Exception:
+        return None
 
 
 class ModbusInverterAdapter(DeviceAdapterBase):
@@ -112,7 +133,14 @@ class ModbusInverterAdapter(DeviceAdapterBase):
                 timeout,
             )
             if ok:
-                return AdapterResult(action=action, outcome=AdapterOutcome.SUCCEEDED, ack=True, message=msg)
+                # State read-back: read same register to confirm device state changed (Implementation Priorities §1)
+                actual_state = _read_power_limit_sync(
+                    self.host, self.port, self.unit_id, self.power_limit_register, timeout,
+                )
+                return AdapterResult(
+                    action=action, outcome=AdapterOutcome.SUCCEEDED, ack=True, message=msg,
+                    actual_state=actual_state,
+                )
             return AdapterResult(action=action, outcome=AdapterOutcome.UNKNOWN, ack=False, message=msg)
         return AdapterResult(
             action=action,

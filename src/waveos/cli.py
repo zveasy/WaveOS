@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
 import time
 import webbrowser
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 from uuid import uuid4
 
 from rich.console import Console
@@ -20,13 +21,16 @@ from waveos.actuators.reliability import ActuationReliabilityLayer
 from waveos.actuators.safety import SafetyInterlock, safe_actuator
 from waveos.actuators.adapter_actuator import AdapterBasedActuator
 from waveos.actuators.adapters import SdnRestAdapter
+from waveos.actuators.adapters.modbus_inverter import ModbusInverterAdapter
 from waveos.collectors import load_records, load_records_from_mqtt, load_records_from_url
 from waveos.licensing import LicenseError, require_license
 from waveos.models import ActionRecommendation, BaselineStats, Event, EventLevel, HealthScore, HealthStatus, RunStats
 from waveos.normalize import normalize_records
 from waveos.policy import recommend_actions
 from waveos.reporting import render_report, write_outputs
-from waveos.persistence import build_incident_from_run, persist_incident_if_enabled, persist_run_if_enabled
+from waveos.persistence import build_incident_from_run, get_store, persist_incident_if_enabled, persist_run_if_enabled
+from waveos.action_lifecycle import propose_actions, record_acked, record_dispatched, record_verified
+from waveos.action_signing import sign_action_batch, verify_action_batch, verified_by_agent_record
 from waveos.scoring import build_stats, score_links
 from waveos.sim import build_demo_dataset
 from waveos.sim.generator import generate_telemetry, _make_links
@@ -37,6 +41,8 @@ from waveos.plugins.registry import list_plugins, get_registry, PluginKind
 from waveos.device_api import get_device_registry, get_driver_instance, DeviceCapability
 from waveos.update_agent import install_bundle, install_bundle_from_cache, promote_canary_bundle, rollback_bundle
 from waveos.recovery import RecoveryOrchestrator, watchdog_ping
+from waveos.heartbeat import emit_heartbeat
+from waveos.coordinator import run_coordinator_server
 from waveos.utils import (
     WaveOSConfig,
     get_logger,
@@ -166,15 +172,19 @@ def _get_actuator(
 
 
 def _default_base_actuator(config, actuator_dir: Path, run_id: str):
-    """Default base: AdapterBasedActuator when actuation_use_adapters else SdnThermalActuator."""
+    """Default base: AdapterBasedActuator when actuation_use_adapters else SdnThermalActuator.
+    When adapters enabled: SDN REST + Modbus inverter (if host set) for vendor-neutral real device control.
+    """
     if config and getattr(config, "actuation_use_adapters", False):
-        adapters = [
+        adapters: List[Any] = [
             SdnRestAdapter(
                 mtls_cert_path=getattr(config, "actuator_mtls_cert_path", None),
                 mtls_key_path=getattr(config, "actuator_mtls_key_path", None),
                 mtls_ca_path=getattr(config, "actuator_mtls_ca_path", None),
             )
         ]
+        if os.getenv("WAVEOS_ACTUATOR_MODBUS_HOST", "").strip():
+            adapters.append(ModbusInverterAdapter())
         fallback = SdnThermalActuator(output_dir=actuator_dir, run_id=run_id)
         timeout = getattr(config, "actuation_timeout_sec", 10.0) or 10.0
         return AdapterBasedActuator(
@@ -376,24 +386,110 @@ def cmd_run(args: argparse.Namespace) -> int:
     scores = score_links(baseline_map, run_map, run_id=run_id)
     feature_flags = config.feature_flags if config else {}
     policy_rules = config.policy_rules if config else []
-    actions = recommend_actions(scores, run_id=run_id, feature_flags=feature_flags, policy_rules=policy_rules)
+    # Optional: use coordinator-signed action batch (verify before use)
+    signed_batch_path = os.getenv("WAVEOS_SIGNED_ACTIONS_PATH", "").strip()
+    signed_batch_json = os.getenv("WAVEOS_SIGNED_ACTIONS_JSON", "").strip()
+    actions_from_signed: Optional[List[ActionRecommendation]] = None
+    action_signing_evidence_for_report: Optional[Dict[str, Any]] = None
+    if signed_batch_path or signed_batch_json:
+        try:
+            if signed_batch_path and Path(signed_batch_path).expanduser().exists():
+                raw = read_json(Path(signed_batch_path).expanduser())
+            else:
+                import json as _json
+                raw = _json.loads(signed_batch_json) if signed_batch_json else None
+            if raw:
+                acts, err = verify_action_batch(raw, max_age_sec=300)
+                if err:
+                    action_signing_evidence_for_report = verified_by_agent_record(
+                        raw.get("nonce", "unknown"), os.getenv("WAVEOS_AGENT_NODE_ID", "local"), utc_now().isoformat(), raw.get("nonce", ""), 0, False
+                    )
+                    action_signing_evidence_for_report["error"] = err
+                elif acts:
+                    actions_from_signed = [ActionRecommendation.model_validate(a) for a in acts if isinstance(a, dict)]
+                    action_signing_evidence_for_report = verified_by_agent_record(
+                        raw.get("nonce", "unknown"), os.getenv("WAVEOS_AGENT_NODE_ID", "local"), utc_now().isoformat(), raw.get("nonce", ""), len(actions_from_signed), True
+                    )
+        except Exception as e:
+            logger.warning("Signed action batch load/verify failed: %s", e)
+    actions = actions_from_signed if actions_from_signed is not None else recommend_actions(scores, run_id=run_id, feature_flags=feature_flags, policy_rules=policy_rules)
     events = _build_events(scores, run_id=run_id)
-    if config and config.enforce_actions:
+    if action_signing_evidence_for_report is not None and not action_signing_evidence_for_report.get("verification_success"):
+        events.append(Event(timestamp=utc_now(), level=EventLevel.ERROR, message="action_signing_verify_failed", details={"error": "see action_signing_evidence"}))
+    action_outcomes_for_report: List[Dict[str, Any]] = []
+    # Escalation lock: if enforcement is locked, do not apply actions (advisory only)
+    enforcement_locked = False
+    if config:
+        locked_path = getattr(config, "enforcement_locked_path", None)
+        if locked_path and Path(locked_path).expanduser().exists():
+            try:
+                enforcement_locked = Path(locked_path).expanduser().read_text(encoding="utf-8").strip().lower() in ("1", "locked", "true", "yes")
+            except Exception:
+                pass
+        if not enforcement_locked and getattr(config, "enforcement_require_approval_path", None):
+            approval_path = Path(config.enforcement_require_approval_path).expanduser()
+            if approval_path.exists() and approval_path.read_text(encoding="utf-8").strip().lower() not in ("1", "approved", "true", "yes"):
+                enforcement_locked = True
+    if config and config.enforce_actions and not enforcement_locked:
         actuator_dir = (Path(config.actuator_output_dir).expanduser() if config.actuator_output_dir else out_dir / "actuator")
         state_lookup = (lambda eid: run_map[eid].metrics if eid in run_map else {}) if run_map else None
         real_actuator = _get_actuator(config, actuator_dir, run_id, state_lookup=state_lookup)
         actuator_name = getattr(real_actuator, "name", real_actuator.__class__.__name__)
-        real_actuator.apply_safe(actions)
+        # Action transaction model: propose (idempotency + cooldown), dispatch, ack, outcomes
+        db_path = Path(config.persistence_db_path).expanduser().resolve() if (getattr(config, "persistence_enabled", False) and getattr(config, "persistence_db_path", None)) else None
+        store = get_store(db_path) if db_path else None
+        idempotency_ttl = float(getattr(config, "actuation_idempotency_ttl_sec", 300) or 300)
+        cooldown_sec = float(getattr(config, "actuation_cooldown_seconds", 0) or 0)
+        to_dispatch, skipped = propose_actions(actions, run_id, store=store, idempotency_ttl_sec=idempotency_ttl, cooldown_sec=cooldown_sec)
+        if skipped:
+            logger.info("Action lifecycle: skipped %s actions (idempotency/cooldown)", len(skipped))
+        actions_to_apply = [a for a, _ in to_dispatch]
+        for _action, txn in to_dispatch:
+            record_dispatched(txn["action_id"], store, run_id=run_id)
+        real_actuator.apply_safe(actions_to_apply)
+        # Record ACK from adapter results when available (real device adapters); closed-loop outcome
+        results = getattr(real_actuator, "get_last_results", lambda: [])()
+        outcome_rows = []
+        for i, (_action, txn) in enumerate(to_dispatch):
+            if i < len(results):
+                r = results[i]
+                record_acked(txn["action_id"], store, ack_message=getattr(r, "message", None), actual_state=getattr(r, "actual_state", None))
+                outcome_str = getattr(r.outcome, "value", str(r.outcome)) if hasattr(r, "outcome") else "unknown"
+                # Map adapter outcome to verification outcome (effective / no_effect / harmful / unknown)
+                if outcome_str in ("succeeded", "SUCCEEDED"):
+                    verification_outcome = "effective"
+                elif outcome_str in ("no_effect", "NO_EFFECT", "degraded", "DEGRADED"):
+                    verification_outcome = "no_effect"
+                else:
+                    verification_outcome = "unknown"
+                record_verified(txn["action_id"], store, outcome=verification_outcome, verification_summary=outcome_str)
+                outcome_rows.append({"action_id": txn["action_id"], "outcome": verification_outcome, "state": "VERIFIED", "run_id": run_id, "what_happened_after": outcome_str})
+            else:
+                outcome_rows.append({"action_id": txn["action_id"], "outcome": "unknown", "state": "DISPATCHED", "run_id": run_id})
+        action_outcomes_for_report = outcome_rows
+        actuator_dir.mkdir(parents=True, exist_ok=True)
+        write_jsonl(actuator_dir / "action_outcomes.jsonl", outcome_rows)
         enforced_path = out_dir / "enforced_actions.jsonl"
-        write_jsonl(enforced_path, [action.model_dump() for action in actions])
+        write_jsonl(enforced_path, [a.model_dump() for a in actions_to_apply])
         events.append(
             Event(
                 timestamp=utc_now(),
                 level=EventLevel.INFO,
                 message="policy_enforced",
-                details={"run_id": run_id, "action_count": len(actions), "actuator": actuator_name, "actuator_dir": str(actuator_dir)},
+                details={"run_id": run_id, "action_count": len(actions_to_apply), "skipped": len(skipped), "actuator": actuator_name, "actuator_dir": str(actuator_dir)},
             )
         )
+    elif config and config.enforce_actions and enforcement_locked:
+        logger.warning("Enforcement locked (escalation); actions not applied")
+        events.append(
+            Event(
+                timestamp=utc_now(),
+                level=EventLevel.WARN,
+                message="enforcement_locked",
+                details={"run_id": run_id, "reason": "escalation lock or approval required"},
+            )
+        )
+        MockActuator().apply(actions)
     else:
         MockActuator().apply(actions)
     events.extend(_build_action_events(actions, run_id=run_id))
@@ -484,6 +580,8 @@ def cmd_run(args: argparse.Namespace) -> int:
         run_stats=run_stats,
         evidence_pack_enabled=config.evidence_pack_enabled if config else True,
         encrypt_artifacts=config.encrypt_artifacts if config else False,
+        action_outcomes=action_outcomes_for_report,
+        action_signing_evidence=action_signing_evidence_for_report,
     )
     if config and getattr(config, "persistence_enabled", False) and getattr(config, "persistence_db_path", None):
         db_path = Path(config.persistence_db_path).expanduser().resolve()
@@ -530,7 +628,14 @@ def cmd_report(args: argparse.Namespace) -> int:
     health_payload = read_json(health_path)
     events_payload = read_jsonl(events_path)
     actions_payload = read_json(actions_path)
-    report_path = render_report(out_dir, health_payload, events_payload, actions_payload)
+    action_outcomes_payload: List[Dict[str, Any]] = []
+    outcomes_path = out_dir / "actuator" / "action_outcomes.jsonl"
+    if outcomes_path.is_file():
+        try:
+            action_outcomes_payload = list(read_jsonl(outcomes_path))
+        except Exception:
+            pass
+    report_path = render_report(out_dir, health_payload, events_payload, actions_payload, action_outcomes=action_outcomes_payload)
     console.print(f"Report written to {report_path}")
     if args.open:
         webbrowser.open(report_path.resolve().as_uri())
@@ -1186,6 +1291,68 @@ def cmd_health_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_agent(args: argparse.Namespace) -> int:
+    """Edge agent mode (Implementation Priorities §4): heartbeat to coordinator, optional run loop, offline-safe."""
+    node_id = getattr(args, "node_id", None) or os.getenv("WAVEOS_AGENT_NODE_ID", "node-1")
+    coordinator_url = (getattr(args, "coordinator_url", None) or os.getenv("WAVEOS_COORDINATOR_URL", "")).strip()
+    heartbeat_file = getattr(args, "heartbeat_file", None) or os.getenv("WAVEOS_AGENT_HEARTBEAT_FILE", "")
+    interval = int(getattr(args, "interval", 0) or os.getenv("WAVEOS_AGENT_INTERVAL_SEC", "60"))
+    run_each_cycle = getattr(args, "run", False) or (os.getenv("WAVEOS_AGENT_RUN_EACH_CYCLE", "").lower() in ("1", "true", "yes"))
+    out_dir = Path(getattr(args, "output", "out") or "out")
+    payload = {"node_id": node_id, "version": current_version()}
+    heartbeat_path = Path(heartbeat_file).expanduser() if heartbeat_file else (out_dir / "agent" / "heartbeat.jsonl")
+    heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
+    cycle = 0
+    while not should_shutdown():
+        cycle += 1
+        emit_heartbeat(node_id, payload=payload, output_path=heartbeat_path)
+        if coordinator_url and coordinator_url.startswith("https://"):
+            try:
+                import urllib.request
+                req = urllib.request.Request(
+                    f"{coordinator_url.rstrip('/')}/heartbeat",
+                    data=json.dumps({**payload, "timestamp": utc_now().isoformat()}, default=str).encode("utf-8"),
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    if resp.status in (200, 201, 202):
+                        logger.debug("Heartbeat sent to coordinator")
+            except Exception as exc:
+                logger.warning("Coordinator heartbeat failed: %s", type(exc).__name__)
+        if run_each_cycle:
+            run_args = argparse.Namespace(
+                input=str(out_dir / "run_input"),
+                baseline=str(out_dir / "baseline"),
+                output=str(out_dir / f"run_{cycle}"),
+                config=getattr(args, "config", None),
+                config_obj=getattr(args, "config_obj", None),
+            )
+            if (out_dir / "run_input").exists() or (out_dir / "baseline").exists():
+                cmd_run(run_args)
+        if interval <= 0:
+            break
+        time.sleep(interval)
+    return 0
+
+
+def cmd_coordinator(args: argparse.Namespace) -> int:
+    """Coordinator v1: node registry, heartbeat ingestion, policy distribution, run ingestion, fleet status API."""
+    sub = getattr(args, "coordinator_command", None)
+    if sub == "serve":
+        host = getattr(args, "host", None) or os.getenv("WAVEOS_COORDINATOR_HOST", "0.0.0.0")
+        port = getattr(args, "port", None) or int(os.getenv("WAVEOS_COORDINATOR_PORT", "9100"))
+        db_path = (Path(getattr(args, "db", "") or os.getenv("WAVEOS_COORDINATOR_DB", "out/coordinator/coordinator.db")).expanduser())
+        use_ssl = getattr(args, "tls", False) or (os.getenv("WAVEOS_COORDINATOR_TLS", "").lower() in ("1", "true", "yes"))
+        run_coordinator_server(host=host, port=port, db_path=db_path, use_ssl=use_ssl)
+        return 0
+    console.print("Coordinator v1: node registry, heartbeats, policy, run ingestion, fleet status API.")
+    console.print("  waveos coordinator serve   - start coordinator server")
+    console.print("  Endpoints: POST /heartbeat, POST /nodes/join, GET /fleet/status, GET /policy/<version>, POST /runs")
+    console.print("  Auth: set WAVEOS_COORDINATOR_AGENT_TOKEN for Bearer token; mTLS optional.")
+    return 0
+
+
 def cmd_validate_telemetry(args: argparse.Namespace) -> int:
     result = validate_file(Path(args.input), args.profile, Path(args.output) if args.output else None)
     console.print(result)
@@ -1513,6 +1680,25 @@ def build_parser() -> argparse.ArgumentParser:
     fleet_status_parser.add_argument("--file", help="Path to nodes JSON (default: out/nodes.json)")
     fleet_status_parser.add_argument("--max-age-seconds", type=int, default=120, help="Heartbeat max age for healthy")
     fleet_status_parser.set_defaults(func=cmd_fleet_status)
+
+    agent_parser = sub.add_parser("agent", help="Edge agent: heartbeat to coordinator, optional run loop (Fleet §4)")
+    agent_parser.add_argument("--node-id", help="Node/site ID (default: WAVEOS_AGENT_NODE_ID or node-1)")
+    agent_parser.add_argument("--coordinator-url", help="Coordinator URL for heartbeat POST (default: WAVEOS_COORDINATOR_URL)")
+    agent_parser.add_argument("--heartbeat-file", help="Write heartbeats to this JSONL file (default: out/agent/heartbeat.jsonl)")
+    agent_parser.add_argument("--interval", type=int, default=0, help="Seconds between cycles (0=once; default: WAVEOS_AGENT_INTERVAL_SEC or 60)")
+    agent_parser.add_argument("--run", action="store_true", help="Run pipeline each cycle (or set WAVEOS_AGENT_RUN_EACH_CYCLE=1)")
+    agent_parser.add_argument("--output", default="out", help="Output base dir for run artifacts")
+    agent_parser.set_defaults(func=cmd_agent)
+
+    coordinator_parser = sub.add_parser("coordinator", help="Coordinator v1: node registry, policy, fleet status (Fleet §4)")
+    coordinator_sub = coordinator_parser.add_subparsers(dest="coordinator_command")
+    coordinator_serve = coordinator_sub.add_parser("serve", help="Start coordinator server")
+    coordinator_serve.add_argument("--host", default="0.0.0.0", help="Bind host")
+    coordinator_serve.add_argument("--port", type=int, help="Port (default: WAVEOS_COORDINATOR_PORT or 9100)")
+    coordinator_serve.add_argument("--db", help="SQLite path (default: out/coordinator/coordinator.db)")
+    coordinator_serve.add_argument("--tls", action="store_true", help="Enable TLS (WAVEOS_COORDINATOR_TLS_CERT, _TLS_KEY)")
+    coordinator_serve.set_defaults(func=cmd_coordinator)
+    coordinator_parser.set_defaults(func=cmd_coordinator)
 
     runbook_parser = sub.add_parser("runbook", help="SRE runbooks: list or run")
     runbook_sub = runbook_parser.add_subparsers(dest="runbook_command")

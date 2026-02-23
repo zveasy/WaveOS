@@ -24,11 +24,16 @@ Pipeline and format are implemented; remaining work is configuration, one succes
 |---|-----|--------|
 | 1 | **Hardware-validated telemetry** | Validate schema against at least one real device or partner protocol; note “Validated with &lt;vendor&gt;” in release notes. |
 | 2 | **Watchdog / recovery on device** | Wire `recovery.py` to a real device supervisor (or document integration kit); validate reset-reason capture. ([DEPLOYMENT_READINESS_REPORT](DEPLOYMENT_READINESS_REPORT.md): No-Go until done.) |
-| 3 | **One real actuator path** | Ship or certify one real actuator adapter, or finalize and publish the [Actuator Integration Kit](ACTUATOR_INTEGRATION_KIT.md) so partners can plug control. |
-| 4 | **mTLS / encrypted telemetry** | Implement or document mTLS (and/or “bring your own gateway”) for ingestion/C2. |
-| 5 | **Pub/sub and C2** | Still planned; add when multi-node or real-time control is required. |
+| 3 | **Real device adapters (≥2)** | Production needs at least **2 real adapters** with end-to-end control: send command → receive ACK → confirm device state changed (e.g. OCPP EV, Modbus/SunSpec BESS/inverter, gNMI/NETCONF/REST SDN). See [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) §1. |
+| 4 | **Action transaction model** | Lifecycle (PROPOSED → DISPATCHED → ACKED → VERIFIED), idempotency, ACK/timeout/retry, reconciliation, rollback/cooldowns. See [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) §2. |
+| 5 | **Closed-loop verification** | Post-action verification; outcome (effective/no-effect/harmful/unknown); reports include "what happened after." See [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) §3. |
+| 6 | **Fleet agent + coordinator** | Edge agent per node, coordinator for policy/bundles, staged rollout, offline-safe behavior. See [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) §4. |
+| 7 | **Persistence + audit at scale** | DB-backed runs/events/actions; retention; tamper-evident audit (hash chain); replay from evidence pack. See [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) §5. |
+| 8 | **Operations hardening** | Real readiness (ingest freshness, actuator connectivity); resource ceilings; soak/load; runbooks; upgrade/migration. See [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) §6. |
+| 9 | **mTLS / encrypted telemetry** | Implement or document mTLS (and/or “bring your own gateway”) for ingestion/C2. |
+| 10 | **Pub/sub and C2** | Still planned; add when multi-node or real-time control is required. |
 
-Encryption at rest, ingestion auth, canary, and offline cache are already implemented.
+Encryption at rest, ingestion auth, canary, and offline cache are already implemented. The six priorities (items 3–8) are detailed in **[IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md)** with concrete deliverables.
 
 ---
 
@@ -70,11 +75,11 @@ Quick start and evaluation path exist ([QUICKSTART_EVALUATION](QUICKSTART_EVALUA
 ## Summary: minimum to be “ready”
 
 - **DevSecOps (no disks):** Run pipeline once, set registry/S3 if needed, verify at one site (and document air-gap process if used).
-- **Production (technical):** At least one validated device integration, watchdog/recovery wired (or integration kit), and one real actuator path (or finalized integration kit).
+- **Production (technical):** At least two real device adapters (command→ACK→state verified), action transaction model, closed-loop verification, watchdog/recovery wired (or integration kit). Fleet, persistence at scale, and ops hardening per [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md).
 - **Production (compliance):** Formalized compliance mapping + one field drill + retention of drill report.
 - **Commercial (legal/support):** EULA and support SLA; optional license server and GTM materials.
 
-Use this list to prioritize by first customer or first deployment; the rest can follow in phases.
+Use this list and [IMPLEMENTATION_PRIORITIES.md](IMPLEMENTATION_PRIORITIES.md) to prioritize by first customer or first deployment; the rest can follow in phases.
 
 ---
 

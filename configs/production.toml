@@ -1,0 +1,34 @@
+# WaveOS production profile
+# Use: waveos --config configs/production.toml <command>
+# When running the coordinator in production, also set env from configs/coordinator.production.env
+#   (e.g. env $(grep -v '^#' configs/coordinator.production.env | xargs) waveos coordinator serve)
+
+schema_version = 1
+
+# --- Security: control-plane hardened ---
+# Require coordinator-signed actions; agent verifies before applying.
+action_signing_required = true
+# Secret name for action signing key (e.g. WAVEOS_ACTION_SIGNING_KEY in vault/env).
+action_signing_key_secret = "WAVEOS_ACTION_SIGNING_KEY"
+
+# No env/JSON fallback for secrets; use a real provider (vault, aws, gcp) with credentials.
+strict_secrets = true
+# In production use "vault" | "aws" | "gcp" when credentials are configured; "env" only if keys are in env.
+secrets_provider = "env"
+
+# --- Enforcement lock (escalation) ---
+# When this file exists and contains "locked", actuation is skipped (incident escalation).
+enforcement_locked_path = "out/enforcement_locked"
+# When set, actuation requires this approval file (e.g. content "approved").
+enforcement_require_approval_path = "out/enforcement_approval"
+
+# --- Desired-state / drift ---
+# Safe default: on drift, fallback to last known good / safe default instead of auto-apply.
+drift_strategy_default = "fallback_safe"
+
+# --- Optional: logging and reliability ---
+log_level = "INFO"
+log_format = "json"
+audit_enabled = true
+audit_log_path = "out/audit.jsonl"
+evidence_pack_enabled = true

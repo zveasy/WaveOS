@@ -148,6 +148,33 @@
       </p>
     </section>
 
+    {% if action_outcomes is defined and action_outcomes %}
+    <section class="section">
+      <h2>What happened after (closed-loop verification)</h2>
+      <p>Outcome of each dispatched action: effective, no_effect, harmful, or unknown.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Action ID</th>
+            <th>Outcome</th>
+            <th>State</th>
+            <th>What happened after</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for row in action_outcomes %}
+          <tr>
+            <td><code>{{ row.action_id }}</code></td>
+            <td>{{ row.outcome }}</td>
+            <td>{{ row.state }}</td>
+            <td>{{ row.get("what_happened_after", "") }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </section>
+    {% endif %}
+
     <section class="section">
       <h2>Events</h2>
       <table>

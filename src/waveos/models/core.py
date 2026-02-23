@@ -104,6 +104,48 @@ class ActionRecommendation(BaseModel):
     rule_id: Optional[str] = None  # policy explainability: which rule produced this recommendation
 
 
+class ActionState(str, Enum):
+    """Lifecycle states for action transaction model (Implementation Priorities §2)."""
+    PROPOSED = "PROPOSED"
+    DISPATCHED = "DISPATCHED"
+    ACKED = "ACKED"
+    VERIFIED = "VERIFIED"
+    FAILED = "FAILED"
+    ROLLED_BACK = "ROLLED_BACK"
+    CANCELLED = "CANCELLED"
+
+
+class ActionOutcome(str, Enum):
+    """Closed-loop verification outcome (Implementation Priorities §3)."""
+    EFFECTIVE = "effective"
+    NO_EFFECT = "no_effect"
+    HARMFUL = "harmful"
+    UNKNOWN = "unknown"
+
+
+class ActionTransaction(BaseModel):
+    """Persisted action with lifecycle state for idempotency, ACK, verification, rollback."""
+    action_id: str
+    idempotency_key: str
+    state: ActionState = ActionState.PROPOSED
+    run_id: str = ""
+    action_type: str = ""
+    entity_type: str = ""
+    entity_id: str = ""
+    rationale: str = ""
+    parameters: Dict[str, Any] = Field(default_factory=dict)
+    proposed_at: Optional[datetime] = None
+    dispatched_at: Optional[datetime] = None
+    acked_at: Optional[datetime] = None
+    verified_at: Optional[datetime] = None
+    outcome: Optional[ActionOutcome] = None
+    verification_summary: Optional[str] = None
+    ack_message: Optional[str] = None
+    actual_state: Optional[Dict[str, Any]] = None
+    error_message: Optional[str] = None
+    details: Dict[str, Any] = Field(default_factory=dict)
+
+
 class BaselineStats(BaseModel):
     entity_type: str
     entity_id: str

@@ -43,6 +43,8 @@ def _init_sqlite(conn: sqlite3.Connection) -> None:
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);
         INSERT OR IGNORE INTO schema_version (version) VALUES (1);
+        INSERT OR IGNORE INTO schema_version (version) VALUES (2);
+        INSERT OR IGNORE INTO schema_version (version) VALUES (3);
 
         CREATE TABLE IF NOT EXISTS runs (
             run_id TEXT PRIMARY KEY,
@@ -105,7 +107,75 @@ def _init_sqlite(conn: sqlite3.Connection) -> None:
         );
         CREATE INDEX IF NOT EXISTS idx_incidents_run_id ON incidents(run_id);
         CREATE INDEX IF NOT EXISTS idx_incidents_created_at ON incidents(created_at);
+
+        CREATE TABLE IF NOT EXISTS action_transactions (
+            action_id TEXT PRIMARY KEY,
+            idempotency_key TEXT NOT NULL,
+            state TEXT NOT NULL,
+            run_id TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            rationale TEXT,
+            parameters_json TEXT,
+            proposed_at TEXT,
+            dispatched_at TEXT,
+            acked_at TEXT,
+            verified_at TEXT,
+            outcome TEXT,
+            verification_summary TEXT,
+            ack_message TEXT,
+            actual_state_json TEXT,
+            error_message TEXT,
+            details_json TEXT,
+            created_at TEXT DEFAULT (datetime('now')),
+            updated_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_action_transactions_idempotency ON action_transactions(idempotency_key);
+        CREATE INDEX IF NOT EXISTS idx_action_transactions_run_id ON action_transactions(run_id);
+        CREATE INDEX IF NOT EXISTS idx_action_transactions_entity ON action_transactions(entity_type, entity_id);
+        CREATE INDEX IF NOT EXISTS idx_action_transactions_dispatched_at ON action_transactions(dispatched_at);
+
+        CREATE TABLE IF NOT EXISTS deployments (
+            deployment_id TEXT PRIMARY KEY,
+            bundle_id TEXT NOT NULL,
+            policy_version TEXT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL,
+            node_ids_json TEXT,
+            canary_percent INTEGER,
+            promoted_at TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_deployments_bundle ON deployments(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_deployments_status ON deployments(status);
+
+        CREATE TABLE IF NOT EXISTS policy_versions_applied (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            node_id TEXT NOT NULL,
+            policy_version TEXT NOT NULL,
+            applied_at TEXT NOT NULL,
+            run_id TEXT,
+            created_at TEXT DEFAULT (datetime('now'))
+        );
+        CREATE INDEX IF NOT EXISTS idx_policy_versions_node ON policy_versions_applied(node_id);
     """)
+    for col, default in [
+        ("status", "DEFAULT 'open'"),
+        ("closed_at", ""),
+        ("escalated_at", ""),
+        ("escalation_reason", ""),
+        ("postmortem_path", ""),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE incidents ADD COLUMN {col} TEXT {default}".strip())
+        except sqlite3.OperationalError:
+            pass
+    try:
+        conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (4)")
+    except sqlite3.OperationalError:
+        pass
 
 
 class SQLiteStore:
@@ -254,6 +324,193 @@ class SQLiteStore:
             )
             rows = cur.fetchall()
         return [dict(r) for r in rows]
+
+    def save_action_transaction(self, txn: Dict[str, Any]) -> None:
+        """Insert or replace one action transaction (lifecycle state)."""
+        with self._conn() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO action_transactions (
+                    action_id, idempotency_key, state, run_id, action_type, entity_type, entity_id,
+                    rationale, parameters_json, proposed_at, dispatched_at, acked_at, verified_at,
+                    outcome, verification_summary, ack_message, actual_state_json, error_message, details_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                """,
+                (
+                    txn.get("action_id"),
+                    txn.get("idempotency_key"),
+                    txn.get("state"),
+                    txn.get("run_id", ""),
+                    txn.get("action_type", ""),
+                    txn.get("entity_type", ""),
+                    txn.get("entity_id", ""),
+                    txn.get("rationale", ""),
+                    json.dumps(txn.get("parameters", {}), default=str),
+                    txn.get("proposed_at"),
+                    txn.get("dispatched_at"),
+                    txn.get("acked_at"),
+                    txn.get("verified_at"),
+                    txn.get("outcome"),
+                    txn.get("verification_summary"),
+                    txn.get("ack_message"),
+                    json.dumps(txn.get("actual_state"), default=str) if txn.get("actual_state") is not None else None,
+                    txn.get("error_message"),
+                    json.dumps(txn.get("details", {}), default=str),
+                ),
+            )
+            conn.commit()
+        logger.debug("Persisted action_transaction %s state=%s", txn.get("action_id"), txn.get("state"))
+
+    def get_action_by_idempotency_key(self, idempotency_key: str) -> Optional[Dict[str, Any]]:
+        """Return existing transaction if idempotency key was already applied (within TTL)."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "SELECT action_id, state, run_id, acked_at, outcome FROM action_transactions WHERE idempotency_key = ?",
+                (idempotency_key,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return {"action_id": row[0], "state": row[1], "run_id": row[2], "acked_at": row[3], "outcome": row[4]}
+
+    def update_action_transaction_state(
+        self,
+        action_id: str,
+        state: str,
+        dispatched_at: Optional[str] = None,
+        acked_at: Optional[str] = None,
+        verified_at: Optional[str] = None,
+        outcome: Optional[str] = None,
+        verification_summary: Optional[str] = None,
+        ack_message: Optional[str] = None,
+        actual_state: Optional[Dict[str, Any]] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Update lifecycle state of an action transaction."""
+        with self._conn() as conn:
+            updates = ["state = ?", "updated_at = datetime('now')"]
+            args: List[Any] = [state]
+            if dispatched_at is not None:
+                updates.append("dispatched_at = ?")
+                args.append(dispatched_at)
+            if acked_at is not None:
+                updates.append("acked_at = ?")
+                args.append(acked_at)
+            if verified_at is not None:
+                updates.append("verified_at = ?")
+                args.append(verified_at)
+            if outcome is not None:
+                updates.append("outcome = ?")
+                args.append(outcome)
+            if verification_summary is not None:
+                updates.append("verification_summary = ?")
+                args.append(verification_summary)
+            if ack_message is not None:
+                updates.append("ack_message = ?")
+                args.append(ack_message)
+            if actual_state is not None:
+                updates.append("actual_state_json = ?")
+                args.append(json.dumps(actual_state, default=str))
+            if error_message is not None:
+                updates.append("error_message = ?")
+                args.append(error_message)
+            args.append(action_id)
+            conn.execute(f"UPDATE action_transactions SET {', '.join(updates)} WHERE action_id = ?", args)
+            conn.commit()
+        logger.debug("Updated action_transaction %s -> %s", action_id, state)
+
+    def get_last_dispatched_at(self, entity_type: str, entity_id: str) -> Optional[str]:
+        """Return ISO timestamp of last dispatched action for this entity (for cooldown)."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "SELECT dispatched_at FROM action_transactions WHERE entity_type = ? AND entity_id = ? AND dispatched_at IS NOT NULL ORDER BY dispatched_at DESC LIMIT 1",
+                (entity_type, entity_id),
+            )
+            row = cur.fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_recent_action_transactions(self, run_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        """List recent action transactions, optionally filtered by run_id."""
+        with self._conn() as conn:
+            if run_id:
+                cur = conn.execute(
+                    "SELECT action_id, idempotency_key, state, run_id, entity_id, outcome, dispatched_at, verified_at FROM action_transactions WHERE run_id = ? ORDER BY dispatched_at DESC LIMIT ?",
+                    (run_id, limit),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT action_id, idempotency_key, state, run_id, entity_id, outcome, dispatched_at, verified_at FROM action_transactions ORDER BY dispatched_at DESC LIMIT ?",
+                    (limit,),
+                )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def save_deployment(
+        self,
+        deployment_id: str,
+        bundle_id: str,
+        policy_version: Optional[str],
+        started_at: str,
+        status: str,
+        completed_at: Optional[str] = None,
+        node_ids_json: Optional[str] = None,
+        canary_percent: Optional[int] = None,
+        promoted_at: Optional[str] = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT OR REPLACE INTO deployments
+                   (deployment_id, bundle_id, policy_version, started_at, completed_at, status, node_ids_json, canary_percent, promoted_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (deployment_id, bundle_id, policy_version or "", started_at, completed_at, status, node_ids_json, canary_percent, promoted_at),
+            )
+            conn.commit()
+
+    def list_deployments(self, limit: int = 50) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            cur = conn.execute(
+                "SELECT deployment_id, bundle_id, policy_version, started_at, completed_at, status, canary_percent FROM deployments ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def save_policy_version_applied(self, node_id: str, policy_version: str, applied_at: str, run_id: Optional[str] = None) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO policy_versions_applied (node_id, policy_version, applied_at, run_id) VALUES (?, ?, ?, ?)",
+                (node_id, policy_version, applied_at, run_id or ""),
+            )
+            conn.commit()
+
+    def get_policy_versions_applied(self, node_id: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        with self._conn() as conn:
+            if node_id:
+                cur = conn.execute(
+                    "SELECT node_id, policy_version, applied_at, run_id FROM policy_versions_applied WHERE node_id = ? ORDER BY applied_at DESC LIMIT ?",
+                    (node_id, limit),
+                )
+            else:
+                cur = conn.execute(
+                    "SELECT node_id, policy_version, applied_at, run_id FROM policy_versions_applied ORDER BY applied_at DESC LIMIT ?",
+                    (limit,),
+                )
+            rows = cur.fetchall()
+        return [dict(r) for r in rows]
+
+    def retention_cleanup(self, retention_days: int) -> int:
+        """Delete runs and related data older than retention_days. Returns number of runs deleted."""
+        if retention_days <= 0:
+            return 0
+        with self._conn() as conn:
+            cur = conn.execute(
+                "DELETE FROM runs WHERE date(completed_at) < date('now', ?)",
+                (f"-{retention_days} days",),
+            )
+            deleted = cur.rowcount
+            conn.commit()
+        logger.info("Retention cleanup: removed %s runs older than %s days", deleted, retention_days)
+        return deleted
 
 
 _store: Optional[SQLiteStore] = None
