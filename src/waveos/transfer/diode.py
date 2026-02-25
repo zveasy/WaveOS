@@ -1,7 +1,8 @@
-"""Data diode / one-way sync — bundles flow one direction only."""
+"""Data diode / one-way sync — bundles flow source→dest only, no metadata flows back."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -14,64 +15,65 @@ logger = get_logger("waveos.transfer.diode")
 
 
 @dataclass
-class DiodeSyncResult:
-    direction: str = "outside_to_inside"
-    synced: List[str] = field(default_factory=list)
-    blocked: List[str] = field(default_factory=list)
-    timestamp: str = ""
+class DiodeConfig:
+    source_dir: Path = Path("out/diode_source")
+    dest_dir: Path = Path("out/diode_dest")
+    one_way: bool = True
+    verify_checksums: bool = True
 
     def to_dict(self) -> dict:
         return {
-            "direction": self.direction,
-            "synced": self.synced,
-            "blocked": self.blocked,
-            "timestamp": self.timestamp or utc_now().isoformat(),
+            "source_dir": str(self.source_dir), "dest_dir": str(self.dest_dir),
+            "one_way": self.one_way, "verify_checksums": self.verify_checksums,
         }
+
+
+@dataclass
+class DiodeSyncResult:
+    synced: List[str] = field(default_factory=list)
+    skipped: List[str] = field(default_factory=list)
+    errors: List[str] = field(default_factory=list)
+    timestamp: str = ""
+
+    def to_dict(self) -> dict:
+        return {"synced": self.synced, "skipped": self.skipped, "errors": self.errors, "timestamp": self.timestamp or utc_now().isoformat()}
 
 
 class DiodeSync:
-    """One-way sync simulating data diode constraints.
-    
-    Only metadata and bundles flow from outside → inside.
-    No data flows from inside → outside (enforced in code).
-    """
+    """One-way bundle sync simulating a data diode."""
 
-    def __init__(self, outside_registry: Path, inside_registry: Path) -> None:
-        self.outside = outside_registry
-        self.inside = inside_registry
-        self._allow_reverse = False
+    def __init__(self, config: Optional[DiodeConfig] = None) -> None:
+        self.config = config or DiodeConfig()
 
-    def sync_inbound(
-        self,
-        channel: Optional[str] = None,
-        hmac_key: Optional[str] = None,
-    ) -> DiodeSyncResult:
-        """Sync bundles from outside to inside (permitted direction)."""
-        from waveos.registry.mirror import RegistryMirror
-        mirror = RegistryMirror(self.outside, self.inside)
-        result = mirror.sync(channel=channel, hmac_key=hmac_key)
-        return DiodeSyncResult(
-            direction="outside_to_inside",
-            synced=result.synced,
-            blocked=result.failed,
-            timestamp=utc_now().isoformat(),
-        )
-
-    def sync_outbound(self) -> DiodeSyncResult:
-        """Attempt outbound sync (blocked by diode — always returns empty)."""
-        logger.warning("Outbound sync blocked by data diode policy")
-        return DiodeSyncResult(
-            direction="inside_to_outside_BLOCKED",
-            synced=[],
-            blocked=["ALL — diode policy enforced"],
-            timestamp=utc_now().isoformat(),
-        )
-
-    def verify_one_way_constraint(self) -> Dict[str, Any]:
-        """Verify that diode constraint is enforced."""
-        return {
-            "allow_inbound": True,
-            "allow_outbound": self._allow_reverse,
-            "policy": "one_way_outside_to_inside",
-            "enforced": not self._allow_reverse,
-        }
+    def sync(self) -> DiodeSyncResult:
+        result = DiodeSyncResult()
+        src = self.config.source_dir
+        dst = self.config.dest_dir
+        dst.mkdir(parents=True, exist_ok=True)
+        if not src.is_dir():
+            result.errors.append(f"Source not found: {src}")
+            return result
+        for item in src.iterdir():
+            if not item.is_dir():
+                continue
+            manifest = item / "bundle.json"
+            if not manifest.exists():
+                continue
+            dest_item = dst / item.name
+            if dest_item.exists():
+                result.skipped.append(item.name)
+                continue
+            try:
+                shutil.copytree(item, dest_item)
+                if self.config.verify_checksums and manifest.exists():
+                    src_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+                    dst_hash = hashlib.sha256((dest_item / "bundle.json").read_bytes()).hexdigest()
+                    if src_hash != dst_hash:
+                        shutil.rmtree(dest_item)
+                        result.errors.append(f"Checksum mismatch for {item.name}")
+                        continue
+                result.synced.append(item.name)
+            except (OSError, shutil.Error) as exc:
+                result.errors.append(f"Failed to sync {item.name}: {exc}")
+        result.timestamp = utc_now().isoformat()
+        return result

@@ -1,4 +1,4 @@
-"""Chain-of-custody audit trail for controlled transfer operations."""
+"""Transfer audit — chain-of-custody tracking for artifacts from CI to device."""
 
 from __future__ import annotations
 
@@ -15,97 +15,82 @@ logger = get_logger("waveos.transfer.audit")
 
 @dataclass
 class ChainOfCustodyEntry:
-    """Single entry in the chain-of-custody for a bundle."""
-    stage: str  # build | sign | publish | transfer | scan | approve | mirror | install | activate
+    """A single custody event in the artifact's journey."""
+    stage: str  # ci_build | ci_sign | publish | gateway_scan | gateway_approve | mirror_sync | agent_download | agent_verify | agent_install
     actor: str
-    timestamp: str
-    bundle_id: str
-    artifact_hash: str = ""
+    timestamp: str = ""
+    bundle_id: str = ""
+    checksum: str = ""
     location: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
-    prev_hash: str = ""
-    entry_hash: str = ""
-
-    def compute_hash(self) -> str:
-        content = json.dumps({
-            "stage": self.stage, "actor": self.actor, "timestamp": self.timestamp,
-            "bundle_id": self.bundle_id, "artifact_hash": self.artifact_hash,
-            "location": self.location, "prev_hash": self.prev_hash,
-        }, sort_keys=True)
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    previous_hash: str = ""
 
     def to_dict(self) -> dict:
         return {
-            "stage": self.stage, "actor": self.actor, "timestamp": self.timestamp,
-            "bundle_id": self.bundle_id, "artifact_hash": self.artifact_hash,
+            "stage": self.stage, "actor": self.actor,
+            "timestamp": self.timestamp or utc_now().isoformat(),
+            "bundle_id": self.bundle_id, "checksum": self.checksum,
             "location": self.location, "details": self.details,
-            "prev_hash": self.prev_hash, "entry_hash": self.entry_hash,
+            "previous_hash": self.previous_hash,
         }
 
     @classmethod
     def from_dict(cls, d: dict) -> ChainOfCustodyEntry:
         return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
+    def entry_hash(self) -> str:
+        payload = json.dumps(self.to_dict(), sort_keys=True, default=str).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
 
 class TransferAuditChain:
-    """Hash-chain audit trail for bundle transfers (CI -> gateway -> mirror -> device)."""
+    """Tamper-evident chain-of-custody for bundle transfers."""
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._entries: List[ChainOfCustodyEntry] = []
-        self._load()
+    def __init__(self) -> None:
+        self._chain: List[ChainOfCustodyEntry] = []
 
-    def _load(self) -> None:
-        if self._path.exists():
-            try:
-                for line in self._path.read_text(encoding="utf-8").strip().split("\n"):
-                    if line.strip():
-                        self._entries.append(ChainOfCustodyEntry.from_dict(json.loads(line)))
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-    def _save_entry(self, entry: ChainOfCustodyEntry) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry.to_dict(), default=str) + "\n")
-
-    def append(
-        self,
-        stage: str,
-        actor: str,
-        bundle_id: str,
-        artifact_hash: str = "",
-        location: str = "",
-        details: Optional[Dict[str, Any]] = None,
-    ) -> ChainOfCustodyEntry:
-        prev_hash = self._entries[-1].entry_hash if self._entries else "genesis"
+    def add_entry(self, stage: str, actor: str, bundle_id: str = "", checksum: str = "", location: str = "", details: Optional[Dict[str, Any]] = None) -> ChainOfCustodyEntry:
+        prev_hash = self._chain[-1].entry_hash() if self._chain else "genesis"
         entry = ChainOfCustodyEntry(
             stage=stage, actor=actor, timestamp=utc_now().isoformat(),
-            bundle_id=bundle_id, artifact_hash=artifact_hash,
-            location=location, details=details or {},
-            prev_hash=prev_hash,
+            bundle_id=bundle_id, checksum=checksum, location=location,
+            details=details or {}, previous_hash=prev_hash,
         )
-        entry.entry_hash = entry.compute_hash()
-        self._entries.append(entry)
-        self._save_entry(entry)
+        self._chain.append(entry)
         return entry
 
-    def get_chain(self, bundle_id: Optional[str] = None) -> List[ChainOfCustodyEntry]:
-        if bundle_id:
-            return [e for e in self._entries if e.bundle_id == bundle_id]
-        return list(self._entries)
-
-    def verify_chain(self, bundle_id: Optional[str] = None) -> tuple[bool, List[str]]:
-        """Verify hash chain integrity. Returns (ok, errors)."""
-        chain = self.get_chain(bundle_id)
+    def verify_chain(self) -> tuple[bool, List[str]]:
         errors: List[str] = []
-        for i, entry in enumerate(chain):
-            expected_hash = entry.compute_hash()
-            if entry.entry_hash != expected_hash:
-                errors.append(f"Entry {i} hash mismatch at stage={entry.stage}")
-            if i > 0 and entry.prev_hash != chain[i - 1].entry_hash:
-                errors.append(f"Entry {i} prev_hash mismatch (chain broken)")
+        for i, entry in enumerate(self._chain):
+            if i == 0:
+                if entry.previous_hash != "genesis":
+                    errors.append(f"First entry previous_hash should be 'genesis', got '{entry.previous_hash}'")
+            else:
+                expected = self._chain[i - 1].entry_hash()
+                if entry.previous_hash != expected:
+                    errors.append(f"Entry {i} ({entry.stage}): hash chain broken")
         return len(errors) == 0, errors
 
-    def export_for_bundle(self, bundle_id: str) -> List[Dict[str, Any]]:
-        return [e.to_dict() for e in self.get_chain(bundle_id)]
+    def get_chain(self) -> List[ChainOfCustodyEntry]:
+        return list(self._chain)
+
+    def save(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([e.to_dict() for e in self._chain], indent=2) + "\n", encoding="utf-8")
+
+    def load(self, path: Path) -> None:
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self._chain = [ChainOfCustodyEntry.from_dict(e) for e in data]
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    def export_for_compliance(self) -> Dict[str, Any]:
+        return {
+            "chain_length": len(self._chain),
+            "stages": [e.stage for e in self._chain],
+            "entries": [e.to_dict() for e in self._chain],
+            "chain_valid": self.verify_chain()[0],
+        }

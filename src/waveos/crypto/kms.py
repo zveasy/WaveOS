@@ -1,10 +1,9 @@
-"""Key Management Service provider interface."""
+"""KMS provider interface — optional integration with HSM/KMS for key management."""
 
 from __future__ import annotations
 
 import json
 import os
-from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -14,122 +13,100 @@ from waveos.utils import get_logger, utc_now
 logger = get_logger("waveos.crypto.kms")
 
 
-class KMSProvider(ABC):
-    """Abstract KMS provider for key storage, rotation, and revocation."""
-
-    @abstractmethod
-    def get_signing_key(self, key_id: str) -> Optional[bytes]:
-        ...
-
-    @abstractmethod
-    def get_verification_key(self, key_id: str) -> Optional[bytes]:
-        ...
-
-    @abstractmethod
-    def list_keys(self) -> List[Dict[str, Any]]:
-        ...
-
-    @abstractmethod
-    def rotate_key(self, key_id: str) -> Optional[str]:
-        ...
-
-    @abstractmethod
-    def revoke_key(self, key_id: str) -> bool:
-        ...
-
-
 @dataclass
-class KeyRecord:
+class KeyMetadata:
     key_id: str
-    algorithm: str = "hmac-sha512"
+    algorithm: str = "ed25519"
     created_at: str = ""
+    rotated_at: str = ""
     revoked: bool = False
-    rotated_to: str = ""
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    revoked_at: str = ""
+    purpose: str = "signing"
 
     def to_dict(self) -> dict:
         return {
             "key_id": self.key_id, "algorithm": self.algorithm,
-            "created_at": self.created_at, "revoked": self.revoked,
-            "rotated_to": self.rotated_to, "metadata": self.metadata,
+            "created_at": self.created_at, "rotated_at": self.rotated_at,
+            "revoked": self.revoked, "revoked_at": self.revoked_at,
+            "purpose": self.purpose,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> KeyMetadata:
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
-class LocalKMS(KMSProvider):
-    """File-system-based KMS for development and air-gapped environments."""
 
-    def __init__(self, keys_dir: Path) -> None:
-        self.keys_dir = keys_dir
-        self.keys_dir.mkdir(parents=True, exist_ok=True)
-        self._index_path = keys_dir / "key_index.json"
-        self._records: Dict[str, KeyRecord] = {}
-        self._load()
+class KMSProvider:
+    """Key management provider (file-based default; can be extended for HSM/Vault/AWS KMS)."""
 
-    def _load(self) -> None:
-        if self._index_path.exists():
-            try:
-                data = json.loads(self._index_path.read_text(encoding="utf-8"))
-                for d in data:
-                    r = KeyRecord(**{k: v for k, v in d.items() if k in KeyRecord.__dataclass_fields__})
-                    self._records[r.key_id] = r
-            except (json.JSONDecodeError, KeyError):
-                pass
+    def __init__(self, store_path: Path = Path("out/kms")) -> None:
+        self.store_path = store_path
+        self.store_path.mkdir(parents=True, exist_ok=True)
+        self._index_path = self.store_path / "keys.json"
 
-    def _save(self) -> None:
-        self._index_path.write_text(
-            json.dumps([r.to_dict() for r in self._records.values()], indent=2) + "\n",
-            encoding="utf-8",
-        )
+    def _load_index(self) -> List[KeyMetadata]:
+        if not self._index_path.exists():
+            return []
+        try:
+            return [KeyMetadata.from_dict(k) for k in json.loads(self._index_path.read_text(encoding="utf-8"))]
+        except (json.JSONDecodeError, KeyError):
+            return []
 
-    def store_key(self, key_id: str, private_key: bytes, public_key: bytes, algorithm: str = "hmac-sha512") -> None:
-        (self.keys_dir / f"{key_id}.key").write_bytes(private_key)
-        (self.keys_dir / f"{key_id}.pub").write_bytes(public_key)
-        self._records[key_id] = KeyRecord(key_id=key_id, algorithm=algorithm, created_at=utc_now().isoformat())
-        self._save()
+    def _save_index(self, keys: List[KeyMetadata]) -> None:
+        self._index_path.write_text(json.dumps([k.to_dict() for k in keys], indent=2) + "\n", encoding="utf-8")
 
-    def get_signing_key(self, key_id: str) -> Optional[bytes]:
-        rec = self._records.get(key_id)
-        if not rec or rec.revoked:
-            return None
-        path = self.keys_dir / f"{key_id}.key"
-        return path.read_bytes() if path.exists() else None
-
-    def get_verification_key(self, key_id: str) -> Optional[bytes]:
-        rec = self._records.get(key_id)
-        if not rec:
-            return None
-        path = self.keys_dir / f"{key_id}.pub"
-        return path.read_bytes() if path.exists() else None
-
-    def list_keys(self) -> List[Dict[str, Any]]:
-        return [r.to_dict() for r in self._records.values()]
-
-    def rotate_key(self, key_id: str) -> Optional[str]:
-        old = self._records.get(key_id)
-        if not old or old.revoked:
-            return None
+    def create_key(self, key_id: str = "", purpose: str = "signing") -> KeyMetadata:
         from waveos.crypto.signing import generate_keypair
-        new_kp = generate_keypair(algorithm=old.algorithm)
-        new_id = new_kp.key_id
-        self.store_key(new_id, new_kp.private_key, new_kp.public_key, new_kp.algorithm)
-        old.rotated_to = new_id
-        self._save()
-        logger.info("Rotated key %s -> %s", key_id, new_id)
-        return new_id
+        kp = generate_keypair(key_id=key_id)
+        (self.store_path / f"{kp.key_id}.private.pem").write_text(kp.private_key_pem, encoding="utf-8")
+        (self.store_path / f"{kp.key_id}.public.pem").write_text(kp.public_key_pem, encoding="utf-8")
+        meta = KeyMetadata(key_id=kp.key_id, algorithm=kp.algorithm, created_at=utc_now().isoformat(), purpose=purpose)
+        keys = self._load_index()
+        keys.append(meta)
+        self._save_index(keys)
+        logger.info("Created key %s (%s)", kp.key_id, kp.algorithm)
+        return meta
+
+    def get_key(self, key_id: str) -> Optional[KeyMetadata]:
+        for k in self._load_index():
+            if k.key_id == key_id:
+                return k
+        return None
+
+    def list_keys(self, include_revoked: bool = False) -> List[KeyMetadata]:
+        keys = self._load_index()
+        if not include_revoked:
+            keys = [k for k in keys if not k.revoked]
+        return keys
 
     def revoke_key(self, key_id: str) -> bool:
-        rec = self._records.get(key_id)
-        if not rec:
-            return False
-        rec.revoked = True
-        self._save()
-        logger.info("Revoked key %s", key_id)
-        return True
+        keys = self._load_index()
+        for k in keys:
+            if k.key_id == key_id:
+                k.revoked = True
+                k.revoked_at = utc_now().isoformat()
+                self._save_index(keys)
+                logger.info("Revoked key %s", key_id)
+                return True
+        return False
+
+    def rotate_key(self, old_key_id: str, purpose: str = "signing") -> Optional[KeyMetadata]:
+        self.revoke_key(old_key_id)
+        return self.create_key(purpose=purpose)
+
+    def get_private_key(self, key_id: str) -> str:
+        path = self.store_path / f"{key_id}.private.pem"
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+        return ""
+
+    def get_public_key(self, key_id: str) -> str:
+        path = self.store_path / f"{key_id}.public.pem"
+        if path.exists():
+            return path.read_text(encoding="utf-8").strip()
+        return ""
 
 
-def get_kms_provider(provider: str = "local", **kwargs) -> KMSProvider:
-    """Factory for KMS providers. Extensible for HSM/AWS/Vault."""
-    if provider == "local":
-        keys_dir = Path(kwargs.get("keys_dir", "out/keys"))
-        return LocalKMS(keys_dir)
-    raise ValueError(f"Unknown KMS provider: {provider}")
+def get_kms_provider(provider: str = "file", store_path: Optional[Path] = None) -> KMSProvider:
+    """Get a KMS provider instance."""
+    return KMSProvider(store_path=store_path or Path("out/kms"))

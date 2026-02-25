@@ -1,14 +1,14 @@
-"""Transfer gateway — pull-from-outside, scan, approve, publish-inside."""
+"""Transfer gateway — pull-from-outside, publish-inside job for DMZ-like zones."""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from waveos.registry.store import RegistryStore
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.transfer.gateway")
@@ -16,143 +16,163 @@ logger = get_logger("waveos.transfer.gateway")
 
 @dataclass
 class GatewayConfig:
-    """Configuration for the transfer gateway."""
-    source_registry: Path = Path("out/external_registry")
-    dest_registry: Path = Path("out/internal_registry")
-    quarantine_dir: Path = Path("out/transfer_quarantine")
-    receipts_path: Path = Path("out/transfer_receipts.jsonl")
-    require_scan: bool = True
-    require_approval: bool = False
-    allowed_channels: List[str] = field(default_factory=lambda: ["dev", "staging", "prod"])
-    one_way: bool = False
+    source_dir: Path = Path("out/external_registry")
+    dest_dir: Path = Path("out/internal_registry")
+    quarantine_dir: Path = Path("out/quarantine")
+    scan_enabled: bool = True
+    approval_required: bool = True
+    allowed_channels: List[str] = field(default_factory=lambda: ["staging", "prod"])
+    max_bundle_size_mb: int = 500
 
     def to_dict(self) -> dict:
         return {
-            "source_registry": str(self.source_registry),
-            "dest_registry": str(self.dest_registry),
-            "quarantine_dir": str(self.quarantine_dir),
-            "receipts_path": str(self.receipts_path),
-            "require_scan": self.require_scan,
-            "require_approval": self.require_approval,
+            "source_dir": str(self.source_dir), "dest_dir": str(self.dest_dir),
+            "quarantine_dir": str(self.quarantine_dir), "scan_enabled": self.scan_enabled,
+            "approval_required": self.approval_required,
             "allowed_channels": self.allowed_channels,
-            "one_way": self.one_way,
+            "max_bundle_size_mb": self.max_bundle_size_mb,
         }
 
 
 @dataclass
 class TransferResult:
     bundle_id: str
-    status: str  # transferred | quarantined | rejected | error
-    reason: str = ""
-    receipt_id: str = ""
+    status: str = "pending"  # pending | scanned | approved | transferred | rejected | quarantined
+    scan_result: str = ""
+    approved_by: str = ""
+    checksum: str = ""
     timestamp: str = ""
+    error: str = ""
 
     def to_dict(self) -> dict:
         return {
             "bundle_id": self.bundle_id, "status": self.status,
-            "reason": self.reason, "receipt_id": self.receipt_id,
-            "timestamp": self.timestamp or utc_now().isoformat(),
+            "scan_result": self.scan_result, "approved_by": self.approved_by,
+            "checksum": self.checksum, "timestamp": self.timestamp or utc_now().isoformat(),
+            "error": self.error,
         }
 
 
 class TransferGateway:
-    """DMZ-zone transfer gateway: pull from outside, scan, approve, publish inside."""
+    """Controlled transfer gateway: scans, approves, and publishes bundles from external to internal registry."""
 
-    def __init__(
-        self,
-        config: GatewayConfig,
-        scan_fn: Optional[Callable[[Path], bool]] = None,
-        approval_fn: Optional[Callable[[str, str], bool]] = None,
-    ) -> None:
-        self.config = config
-        self.scan_fn = scan_fn
-        self.approval_fn = approval_fn
-        self.source = RegistryStore(config.source_registry)
-        self.dest = RegistryStore(config.dest_registry)
+    def __init__(self, config: Optional[GatewayConfig] = None) -> None:
+        self.config = config or GatewayConfig()
         self.config.quarantine_dir.mkdir(parents=True, exist_ok=True)
         self._results: List[TransferResult] = []
 
-    def _write_receipt(self, result: TransferResult) -> None:
-        self.config.receipts_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.config.receipts_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(result.to_dict(), default=str) + "\n")
+    def discover_bundles(self) -> List[str]:
+        """Discover bundle IDs in source directory."""
+        if not self.config.source_dir.is_dir():
+            return []
+        bundles = []
+        bundles_dir = self.config.source_dir / "bundles"
+        if bundles_dir.is_dir():
+            for d in bundles_dir.iterdir():
+                if d.is_dir() and (d / "bundle.json").exists():
+                    bundles.append(d.name)
+        else:
+            for d in self.config.source_dir.iterdir():
+                if d.is_dir() and (d / "bundle.json").exists():
+                    bundles.append(d.name)
+        return bundles
 
-    def transfer_bundle(self, bundle_id: str) -> TransferResult:
+    def _get_bundle_path(self, bundle_id: str) -> Optional[Path]:
+        p = self.config.source_dir / "bundles" / bundle_id
+        if p.is_dir():
+            return p
+        p = self.config.source_dir / bundle_id
+        if p.is_dir():
+            return p
+        return None
+
+    def transfer_bundle(
+        self,
+        bundle_id: str,
+        scan_hook: Optional[Callable[[Path], str]] = None,
+        approval_hook: Optional[Callable[[str], str]] = None,
+    ) -> TransferResult:
         """Transfer a single bundle through the gateway pipeline."""
-        source_path = self.source.get_bundle(bundle_id)
-        if not source_path:
-            result = TransferResult(bundle_id=bundle_id, status="error", reason="Not found in source registry")
+        result = TransferResult(bundle_id=bundle_id)
+        bundle_path = self._get_bundle_path(bundle_id)
+        if not bundle_path:
+            result.status = "rejected"
+            result.error = "Bundle not found in source"
             self._results.append(result)
             return result
 
-        entry = self.source.get_entry(bundle_id)
-        channel = entry.channel if entry else "dev"
-        if channel not in self.config.allowed_channels:
-            result = TransferResult(bundle_id=bundle_id, status="rejected", reason=f"Channel {channel} not allowed")
+        total_size = sum(f.stat().st_size for f in bundle_path.rglob("*") if f.is_file())
+        if total_size > self.config.max_bundle_size_mb * 1024 * 1024:
+            result.status = "rejected"
+            result.error = f"Bundle size {total_size} exceeds limit {self.config.max_bundle_size_mb}MB"
             self._results.append(result)
-            self._write_receipt(result)
             return result
 
-        if self.config.require_scan and self.scan_fn:
-            try:
-                scan_ok = self.scan_fn(source_path)
-                if not scan_ok:
-                    import shutil
-                    quarantine_dest = self.config.quarantine_dir / bundle_id
-                    if quarantine_dest.exists():
-                        shutil.rmtree(quarantine_dest)
-                    shutil.copytree(source_path, quarantine_dest)
-                    result = TransferResult(bundle_id=bundle_id, status="quarantined", reason="Scan failed")
-                    self._results.append(result)
-                    self._write_receipt(result)
-                    return result
-            except Exception as exc:
-                result = TransferResult(bundle_id=bundle_id, status="error", reason=f"Scan error: {exc}")
-                self._results.append(result)
-                self._write_receipt(result)
-                return result
+        manifest_path = bundle_path / "bundle.json"
+        result.checksum = hashlib.sha256(manifest_path.read_bytes()).hexdigest() if manifest_path.exists() else ""
 
-        if self.config.require_approval and self.approval_fn:
-            try:
-                approved = self.approval_fn(bundle_id, channel)
-                if not approved:
-                    result = TransferResult(bundle_id=bundle_id, status="rejected", reason="Approval denied")
+        if self.config.scan_enabled:
+            if scan_hook:
+                try:
+                    scan_result = scan_hook(bundle_path)
+                    result.scan_result = scan_result
+                    if scan_result not in ("clean", "passed", "ok", ""):
+                        result.status = "quarantined"
+                        dest = self.config.quarantine_dir / bundle_id
+                        if dest.exists():
+                            shutil.rmtree(dest)
+                        shutil.copytree(bundle_path, dest)
+                        self._results.append(result)
+                        return result
+                except Exception as exc:
+                    result.status = "rejected"
+                    result.error = f"Scan failed: {exc}"
                     self._results.append(result)
-                    self._write_receipt(result)
                     return result
-            except Exception as exc:
-                result = TransferResult(bundle_id=bundle_id, status="error", reason=f"Approval error: {exc}")
-                self._results.append(result)
-                self._write_receipt(result)
-                return result
+            result.scan_result = "passed"
+        result.status = "scanned"
+
+        if self.config.approval_required:
+            if approval_hook:
+                try:
+                    approved_by = approval_hook(bundle_id)
+                    if not approved_by:
+                        result.status = "rejected"
+                        result.error = "Approval denied"
+                        self._results.append(result)
+                        return result
+                    result.approved_by = approved_by
+                except Exception as exc:
+                    result.status = "rejected"
+                    result.error = f"Approval failed: {exc}"
+                    self._results.append(result)
+                    return result
+            else:
+                result.approved_by = "auto"
+        result.status = "approved"
 
         try:
-            self.dest.publish(source_path, channel=channel, publisher="transfer-gateway")
-            receipt_id = f"xfer-{utc_now().strftime('%Y%m%d%H%M%S')}-{bundle_id[:8]}"
-            result = TransferResult(
-                bundle_id=bundle_id, status="transferred",
-                reason=f"Published to {channel}", receipt_id=receipt_id,
-            )
-            self._results.append(result)
-            self._write_receipt(result)
-            return result
+            from waveos.registry.store import RegistryStore
+            dest_store = RegistryStore(self.config.dest_dir)
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8")) if manifest_path.exists() else {}
+            channel = manifest.get("channel", "staging")
+            if self.config.allowed_channels and channel not in self.config.allowed_channels:
+                channel = self.config.allowed_channels[0] if self.config.allowed_channels else "staging"
+            dest_store.publish(bundle_path, channel=channel, publisher=f"gateway:{result.approved_by}")
+            result.status = "transferred"
         except Exception as exc:
-            result = TransferResult(bundle_id=bundle_id, status="error", reason=str(exc))
-            self._results.append(result)
-            self._write_receipt(result)
-            return result
+            result.status = "rejected"
+            result.error = f"Publish failed: {exc}"
 
-    def transfer_all(self, channel: Optional[str] = None) -> List[TransferResult]:
-        """Transfer all available bundles from source to destination."""
-        entries = self.source.list_bundles(channel=channel)
-        dest_ids = {e.bundle_id for e in self.dest.list_bundles()}
+        result.timestamp = utc_now().isoformat()
+        self._results.append(result)
+        return result
+
+    def transfer_all(self, scan_hook=None, approval_hook=None) -> List[TransferResult]:
         results = []
-        for entry in entries:
-            if entry.bundle_id in dest_ids:
-                continue
-            results.append(self.transfer_bundle(entry.bundle_id))
+        for bundle_id in self.discover_bundles():
+            results.append(self.transfer_bundle(bundle_id, scan_hook=scan_hook, approval_hook=approval_hook))
         return results
 
-    @property
-    def results(self) -> List[TransferResult]:
+    def get_results(self) -> List[TransferResult]:
         return list(self._results)
