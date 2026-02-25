@@ -1,194 +1,158 @@
-"""Transfer gateway — pull-from-outside, publish-inside job runner for DMZ environments."""
+"""Transfer gateway — pull-from-outside, scan, approve, publish-inside."""
 
 from __future__ import annotations
 
+import hashlib
 import json
-import shutil
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from waveos.registry.store import RegistryStore
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.transfer.gateway")
 
 
-class TransferJobStatus(str, Enum):
-    PENDING = "pending"
-    SCANNING = "scanning"
-    AWAITING_APPROVAL = "awaiting_approval"
-    APPROVED = "approved"
-    TRANSFERRING = "transferring"
-    PUBLISHING = "publishing"
-    COMPLETED = "completed"
-    REJECTED = "rejected"
-    FAILED = "failed"
-
-
 @dataclass
-class TransferJob:
-    job_id: str
-    bundle_id: str
-    source_registry: str
-    dest_registry: str
-    channel: str = "dev"
-    status: TransferJobStatus = TransferJobStatus.PENDING
-    scan_result: Optional[Dict[str, Any]] = None
-    approval: Optional[Dict[str, Any]] = None
-    receipt: Optional[Dict[str, Any]] = None
-    created_at: str = ""
-    completed_at: str = ""
-    error: str = ""
+class GatewayConfig:
+    """Configuration for the transfer gateway."""
+    source_registry: Path = Path("out/external_registry")
+    dest_registry: Path = Path("out/internal_registry")
+    quarantine_dir: Path = Path("out/transfer_quarantine")
+    receipts_path: Path = Path("out/transfer_receipts.jsonl")
+    require_scan: bool = True
+    require_approval: bool = False
+    allowed_channels: List[str] = field(default_factory=lambda: ["dev", "staging", "prod"])
+    one_way: bool = False
 
     def to_dict(self) -> dict:
         return {
-            "job_id": self.job_id,
-            "bundle_id": self.bundle_id,
-            "source_registry": self.source_registry,
-            "dest_registry": self.dest_registry,
-            "channel": self.channel,
-            "status": self.status.value,
-            "scan_result": self.scan_result,
-            "approval": self.approval,
-            "receipt": self.receipt,
-            "created_at": self.created_at or utc_now().isoformat(),
-            "completed_at": self.completed_at,
-            "error": self.error,
+            "source_registry": str(self.source_registry),
+            "dest_registry": str(self.dest_registry),
+            "quarantine_dir": str(self.quarantine_dir),
+            "receipts_path": str(self.receipts_path),
+            "require_scan": self.require_scan,
+            "require_approval": self.require_approval,
+            "allowed_channels": self.allowed_channels,
+            "one_way": self.one_way,
         }
 
-    @classmethod
-    def from_dict(cls, d: dict) -> TransferJob:
-        d2 = dict(d)
-        if "status" in d2:
-            d2["status"] = TransferJobStatus(d2["status"])
-        return cls(**{k: d2[k] for k in d2 if k in cls.__dataclass_fields__})
+
+@dataclass
+class TransferResult:
+    bundle_id: str
+    status: str  # transferred | quarantined | rejected | error
+    reason: str = ""
+    receipt_id: str = ""
+    timestamp: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "bundle_id": self.bundle_id, "status": self.status,
+            "reason": self.reason, "receipt_id": self.receipt_id,
+            "timestamp": self.timestamp or utc_now().isoformat(),
+        }
 
 
 class TransferGateway:
-    """Manages controlled transfer jobs: scan -> approve -> transfer -> publish."""
+    """DMZ-zone transfer gateway: pull from outside, scan, approve, publish inside."""
 
-    def __init__(self, jobs_dir: Path) -> None:
-        self.jobs_dir = jobs_dir
-        self.jobs_dir.mkdir(parents=True, exist_ok=True)
-        self._scan_hook: Optional[Callable] = None
-        self._approval_hook: Optional[Callable] = None
+    def __init__(
+        self,
+        config: GatewayConfig,
+        scan_fn: Optional[Callable[[Path], bool]] = None,
+        approval_fn: Optional[Callable[[str, str], bool]] = None,
+    ) -> None:
+        self.config = config
+        self.scan_fn = scan_fn
+        self.approval_fn = approval_fn
+        self.source = RegistryStore(config.source_registry)
+        self.dest = RegistryStore(config.dest_registry)
+        self.config.quarantine_dir.mkdir(parents=True, exist_ok=True)
+        self._results: List[TransferResult] = []
 
-    def set_scan_hook(self, hook: Callable[[Path], Dict[str, Any]]) -> None:
-        self._scan_hook = hook
+    def _write_receipt(self, result: TransferResult) -> None:
+        self.config.receipts_path.parent.mkdir(parents=True, exist_ok=True)
+        with self.config.receipts_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(result.to_dict(), default=str) + "\n")
 
-    def set_approval_hook(self, hook: Callable[[TransferJob], Dict[str, Any]]) -> None:
-        self._approval_hook = hook
+    def transfer_bundle(self, bundle_id: str) -> TransferResult:
+        """Transfer a single bundle through the gateway pipeline."""
+        source_path = self.source.get_bundle(bundle_id)
+        if not source_path:
+            result = TransferResult(bundle_id=bundle_id, status="error", reason="Not found in source registry")
+            self._results.append(result)
+            return result
 
-    def create_job(self, bundle_id: str, source_registry: str, dest_registry: str, channel: str = "dev") -> TransferJob:
-        job_id = f"xfer-{utc_now().strftime('%Y%m%d%H%M%S')}-{bundle_id[:8]}"
-        job = TransferJob(
-            job_id=job_id, bundle_id=bundle_id, source_registry=source_registry,
-            dest_registry=dest_registry, channel=channel, created_at=utc_now().isoformat(),
-        )
-        self._save_job(job)
-        return job
+        entry = self.source.get_entry(bundle_id)
+        channel = entry.channel if entry else "dev"
+        if channel not in self.config.allowed_channels:
+            result = TransferResult(bundle_id=bundle_id, status="rejected", reason=f"Channel {channel} not allowed")
+            self._results.append(result)
+            self._write_receipt(result)
+            return result
 
-    def _save_job(self, job: TransferJob) -> None:
-        path = self.jobs_dir / f"{job.job_id}.json"
-        path.write_text(json.dumps(job.to_dict(), indent=2) + "\n", encoding="utf-8")
-
-    def _load_job(self, job_id: str) -> Optional[TransferJob]:
-        path = self.jobs_dir / f"{job_id}.json"
-        if not path.exists():
-            return None
-        try:
-            return TransferJob.from_dict(json.loads(path.read_text(encoding="utf-8")))
-        except (json.JSONDecodeError, KeyError):
-            return None
-
-    def execute_job(self, job_id: str) -> TransferJob:
-        """Execute a transfer job through the full pipeline."""
-        job = self._load_job(job_id)
-        if not job:
-            raise ValueError(f"Job {job_id} not found")
-
-        source = Path(job.source_registry)
-        dest = Path(job.dest_registry)
-
-        from waveos.registry.store import RegistryStore
-        source_store = RegistryStore(source)
-        bundle_path = source_store.get_bundle(job.bundle_id)
-        if not bundle_path:
-            job.status = TransferJobStatus.FAILED
-            job.error = "Bundle not found in source registry"
-            self._save_job(job)
-            return job
-
-        # Scan
-        job.status = TransferJobStatus.SCANNING
-        self._save_job(job)
-        if self._scan_hook:
+        if self.config.require_scan and self.scan_fn:
             try:
-                scan_result = self._scan_hook(bundle_path)
-                job.scan_result = scan_result
-                if not scan_result.get("ok", True):
-                    job.status = TransferJobStatus.REJECTED
-                    job.error = scan_result.get("reason", "Scan rejected")
-                    self._save_job(job)
-                    return job
+                scan_ok = self.scan_fn(source_path)
+                if not scan_ok:
+                    import shutil
+                    quarantine_dest = self.config.quarantine_dir / bundle_id
+                    if quarantine_dest.exists():
+                        shutil.rmtree(quarantine_dest)
+                    shutil.copytree(source_path, quarantine_dest)
+                    result = TransferResult(bundle_id=bundle_id, status="quarantined", reason="Scan failed")
+                    self._results.append(result)
+                    self._write_receipt(result)
+                    return result
             except Exception as exc:
-                job.status = TransferJobStatus.FAILED
-                job.error = f"Scan error: {exc}"
-                self._save_job(job)
-                return job
-        else:
-            job.scan_result = {"ok": True, "scanner": "none"}
+                result = TransferResult(bundle_id=bundle_id, status="error", reason=f"Scan error: {exc}")
+                self._results.append(result)
+                self._write_receipt(result)
+                return result
 
-        # Approval
-        job.status = TransferJobStatus.AWAITING_APPROVAL
-        self._save_job(job)
-        if self._approval_hook:
+        if self.config.require_approval and self.approval_fn:
             try:
-                approval = self._approval_hook(job)
-                job.approval = approval
-                if not approval.get("approved", False):
-                    job.status = TransferJobStatus.REJECTED
-                    job.error = approval.get("reason", "Not approved")
-                    self._save_job(job)
-                    return job
+                approved = self.approval_fn(bundle_id, channel)
+                if not approved:
+                    result = TransferResult(bundle_id=bundle_id, status="rejected", reason="Approval denied")
+                    self._results.append(result)
+                    self._write_receipt(result)
+                    return result
             except Exception as exc:
-                job.status = TransferJobStatus.FAILED
-                job.error = f"Approval error: {exc}"
-                self._save_job(job)
-                return job
-        else:
-            job.approval = {"approved": True, "approver": "auto"}
-        job.status = TransferJobStatus.APPROVED
-        self._save_job(job)
+                result = TransferResult(bundle_id=bundle_id, status="error", reason=f"Approval error: {exc}")
+                self._results.append(result)
+                self._write_receipt(result)
+                return result
 
-        # Transfer
-        job.status = TransferJobStatus.TRANSFERRING
-        self._save_job(job)
-        dest_store = RegistryStore(dest)
         try:
-            entry = dest_store.publish(bundle_path, channel=job.channel, publisher=f"gateway:{job.job_id}")
-            job.receipt = {
-                "bundle_id": entry.bundle_id, "channel": entry.channel,
-                "published_at": entry.published_at, "size_bytes": entry.size_bytes,
-            }
+            self.dest.publish(source_path, channel=channel, publisher="transfer-gateway")
+            receipt_id = f"xfer-{utc_now().strftime('%Y%m%d%H%M%S')}-{bundle_id[:8]}"
+            result = TransferResult(
+                bundle_id=bundle_id, status="transferred",
+                reason=f"Published to {channel}", receipt_id=receipt_id,
+            )
+            self._results.append(result)
+            self._write_receipt(result)
+            return result
         except Exception as exc:
-            job.status = TransferJobStatus.FAILED
-            job.error = f"Transfer failed: {exc}"
-            self._save_job(job)
-            return job
+            result = TransferResult(bundle_id=bundle_id, status="error", reason=str(exc))
+            self._results.append(result)
+            self._write_receipt(result)
+            return result
 
-        job.status = TransferJobStatus.COMPLETED
-        job.completed_at = utc_now().isoformat()
-        self._save_job(job)
-        logger.info("Transfer job %s completed: %s -> %s", job.job_id, job.source_registry, job.dest_registry)
-        return job
+    def transfer_all(self, channel: Optional[str] = None) -> List[TransferResult]:
+        """Transfer all available bundles from source to destination."""
+        entries = self.source.list_bundles(channel=channel)
+        dest_ids = {e.bundle_id for e in self.dest.list_bundles()}
+        results = []
+        for entry in entries:
+            if entry.bundle_id in dest_ids:
+                continue
+            results.append(self.transfer_bundle(entry.bundle_id))
+        return results
 
-    def list_jobs(self) -> List[TransferJob]:
-        jobs = []
-        for path in sorted(self.jobs_dir.glob("xfer-*.json")):
-            try:
-                jobs.append(TransferJob.from_dict(json.loads(path.read_text(encoding="utf-8"))))
-            except (json.JSONDecodeError, KeyError):
-                pass
-        return jobs
+    @property
+    def results(self) -> List[TransferResult]:
+        return list(self._results)

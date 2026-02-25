@@ -1,11 +1,9 @@
-"""WaveOS Controlled Transfer — gateway adaptors, diode sync, transfer audit."""
+"""WaveOS Controlled Transfer — gateway, diode sync, and chain-of-custody audit."""
 
-from waveos.transfer.gateway import TransferGateway, TransferJob, TransferJobStatus
-from waveos.transfer.diode import DiodeSync
-from waveos.transfer.audit import TransferAuditLog, ChainOfCustodyEntry
+from waveos.transfer.gateway import TransferGateway, GatewayConfig
+from waveos.transfer.audit import TransferAuditChain, ChainOfCustodyEntry
 
 __all__ = [
-    "TransferGateway", "TransferJob", "TransferJobStatus",
-    "DiodeSync",
-    "TransferAuditLog", "ChainOfCustodyEntry",
+    "TransferGateway", "GatewayConfig",
+    "TransferAuditChain", "ChainOfCustodyEntry",
 ]
