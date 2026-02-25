@@ -5,15 +5,20 @@ from waveos.crypto.signing import (
     generate_keypair,
     sign_bundle_ed25519,
     verify_bundle_ed25519,
-    sign_data,
-    verify_signature,
+    sign_bundle_hmac,
+    verify_bundle_hmac,
 )
-from waveos.crypto.keystore import KeyStore, KeyRecord, KeyStatus
-from waveos.crypto.anti_rollback import VersionEpoch, ReleaseEpochStore, check_anti_rollback
+from waveos.crypto.keystore import KeyStore, KeyEntry
+from waveos.crypto.anti_rollback import (
+    ReleaseEpoch,
+    check_anti_rollback,
+    get_current_epoch,
+    record_epoch,
+)
 
 __all__ = [
     "KeyPair", "generate_keypair", "sign_bundle_ed25519", "verify_bundle_ed25519",
-    "sign_data", "verify_signature",
-    "KeyStore", "KeyRecord", "KeyStatus",
-    "VersionEpoch", "ReleaseEpochStore", "check_anti_rollback",
+    "sign_bundle_hmac", "verify_bundle_hmac",
+    "KeyStore", "KeyEntry",
+    "ReleaseEpoch", "check_anti_rollback", "get_current_epoch", "record_epoch",
 ]

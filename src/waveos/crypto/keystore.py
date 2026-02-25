@@ -1,138 +1,117 @@
-"""Key management — key store with rotation, revocation, and optional HSM/KMS integration."""
+"""Key store — key management, rotation, and revocation."""
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from waveos.crypto.signing import KeyPair
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.crypto.keystore")
 
 
-class KeyStatus(str, Enum):
-    ACTIVE = "active"
-    ROTATED = "rotated"
-    REVOKED = "revoked"
-    EXPIRED = "expired"
-
-
 @dataclass
-class KeyRecord:
-    """A key with lifecycle metadata."""
+class KeyEntry:
     key_id: str
-    status: KeyStatus = KeyStatus.ACTIVE
+    public_key_hex: str
     algorithm: str = "ed25519"
-    public_key: str = ""
     created_at: str = ""
-    rotated_at: str = ""
-    revoked_at: str = ""
     expires_at: str = ""
-    successor_key_id: str = ""
-    kms_ref: str = ""  # external KMS/HSM reference
+    revoked: bool = False
+    revoked_at: str = ""
+    purpose: str = "signing"  # signing | encryption | transport
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
-            "key_id": self.key_id, "status": self.status.value, "algorithm": self.algorithm,
-            "public_key": self.public_key, "created_at": self.created_at, "rotated_at": self.rotated_at,
-            "revoked_at": self.revoked_at, "expires_at": self.expires_at,
-            "successor_key_id": self.successor_key_id, "kms_ref": self.kms_ref,
+            "key_id": self.key_id,
+            "public_key_hex": self.public_key_hex,
+            "algorithm": self.algorithm,
+            "created_at": self.created_at,
+            "expires_at": self.expires_at,
+            "revoked": self.revoked,
+            "revoked_at": self.revoked_at,
+            "purpose": self.purpose,
+            "metadata": self.metadata,
         }
 
     @classmethod
-    def from_dict(cls, d: dict) -> KeyRecord:
-        return cls(
-            key_id=d.get("key_id", ""), status=KeyStatus(d.get("status", "active")),
-            algorithm=d.get("algorithm", "ed25519"), public_key=d.get("public_key", ""),
-            created_at=d.get("created_at", ""), rotated_at=d.get("rotated_at", ""),
-            revoked_at=d.get("revoked_at", ""), expires_at=d.get("expires_at", ""),
-            successor_key_id=d.get("successor_key_id", ""), kms_ref=d.get("kms_ref", ""),
-        )
+    def from_dict(cls, d: dict) -> KeyEntry:
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
+
+    def is_valid(self) -> bool:
+        if self.revoked:
+            return False
+        if self.expires_at:
+            return utc_now().isoformat() <= self.expires_at
+        return True
 
 
 class KeyStore:
-    """Manages signing keys with rotation and revocation support.
+    """File-system key store with rotation and revocation support.
 
-    Supports:
-    - Local file-based key storage
-    - Key rotation with successor chain
-    - Revocation
-    - Optional external KMS/HSM reference (key operations delegated)
+    Can also serve as an offline trust store for air-gapped verification.
     """
 
-    def __init__(self, store_path: Optional[Path] = None) -> None:
-        self._keys: Dict[str, KeyRecord] = {}
-        self._store_path = store_path
-        if store_path and store_path.exists():
-            self._load()
+    def __init__(self, store_path: Path) -> None:
+        self.path = store_path
+        self.path.mkdir(parents=True, exist_ok=True)
+        self._index_path = self.path / "keys.json"
 
-    def _load(self) -> None:
+    def _load(self) -> List[KeyEntry]:
+        if not self._index_path.exists():
+            return []
         try:
-            data = json.loads(self._store_path.read_text(encoding="utf-8"))
-            for d in data:
-                rec = KeyRecord.from_dict(d)
-                self._keys[rec.key_id] = rec
-        except (json.JSONDecodeError, OSError):
-            pass
+            data = json.loads(self._index_path.read_text(encoding="utf-8"))
+            return [KeyEntry.from_dict(e) for e in data]
+        except (json.JSONDecodeError, KeyError):
+            return []
 
-    def save(self) -> None:
-        if self._store_path:
-            self._store_path.parent.mkdir(parents=True, exist_ok=True)
-            self._store_path.write_text(json.dumps([k.to_dict() for k in self._keys.values()], indent=2) + "\n", encoding="utf-8")
+    def _save(self, entries: List[KeyEntry]) -> None:
+        self._index_path.write_text(json.dumps([e.to_dict() for e in entries], indent=2) + "\n", encoding="utf-8")
 
-    def add(self, keypair: KeyPair, kms_ref: str = "") -> KeyRecord:
-        record = KeyRecord(
-            key_id=keypair.key_id, status=KeyStatus.ACTIVE, algorithm=keypair.algorithm,
-            public_key=keypair.public_key, created_at=keypair.created_at or utc_now().isoformat(),
-            kms_ref=kms_ref,
-        )
-        self._keys[keypair.key_id] = record
-        self.save()
-        return record
+    def add_key(self, entry: KeyEntry) -> None:
+        entries = self._load()
+        entries = [e for e in entries if e.key_id != entry.key_id]
+        entries.append(entry)
+        self._save(entries)
 
-    def get(self, key_id: str) -> Optional[KeyRecord]:
-        return self._keys.get(key_id)
-
-    def get_active(self) -> Optional[KeyRecord]:
-        for rec in self._keys.values():
-            if rec.status == KeyStatus.ACTIVE:
-                return rec
+    def get_key(self, key_id: str) -> Optional[KeyEntry]:
+        for e in self._load():
+            if e.key_id == key_id:
+                return e
         return None
 
-    def rotate(self, old_key_id: str, new_keypair: KeyPair) -> Optional[KeyRecord]:
-        old = self._keys.get(old_key_id)
-        if not old:
-            return None
-        old.status = KeyStatus.ROTATED
-        old.rotated_at = utc_now().isoformat()
-        old.successor_key_id = new_keypair.key_id
-        new_record = self.add(new_keypair)
-        self.save()
-        return new_record
+    def get_valid_keys(self, purpose: str = "signing") -> List[KeyEntry]:
+        return [e for e in self._load() if e.purpose == purpose and e.is_valid()]
 
-    def revoke(self, key_id: str) -> bool:
-        rec = self._keys.get(key_id)
-        if not rec:
-            return False
-        rec.status = KeyStatus.REVOKED
-        rec.revoked_at = utc_now().isoformat()
-        self.save()
+    def revoke_key(self, key_id: str, reason: str = "") -> bool:
+        entries = self._load()
+        for e in entries:
+            if e.key_id == key_id:
+                e.revoked = True
+                e.revoked_at = utc_now().isoformat()
+                e.metadata["revocation_reason"] = reason
+                self._save(entries)
+                return True
+        return False
+
+    def rotate(self, old_key_id: str, new_entry: KeyEntry, reason: str = "scheduled rotation") -> bool:
+        self.revoke_key(old_key_id, reason=reason)
+        self.add_key(new_entry)
         return True
 
-    def is_trusted(self, key_id: str) -> bool:
-        rec = self._keys.get(key_id)
-        return rec is not None and rec.status == KeyStatus.ACTIVE
+    def list_keys(self) -> List[KeyEntry]:
+        return self._load()
 
-    def list_keys(self, status: Optional[KeyStatus] = None) -> List[KeyRecord]:
-        if status:
-            return [k for k in self._keys.values() if k.status == status]
-        return list(self._keys.values())
-
-    def resolve_kms(self, key_id: str) -> Optional[str]:
-        """Return KMS/HSM reference for external key operations."""
-        rec = self._keys.get(key_id)
-        return rec.kms_ref if rec else None
+    def export_trust_store(self, output_dir: Path) -> int:
+        """Export valid public keys as *.key files for offline trust store."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        count = 0
+        for entry in self.get_valid_keys():
+            key_file = output_dir / f"{entry.key_id}.key"
+            key_file.write_text(entry.public_key_hex + "\n", encoding="utf-8")
+            count += 1
+        return count

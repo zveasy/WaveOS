@@ -1,4 +1,4 @@
-"""Transfer Gateway — pull-from-outside, publish-inside job for DMZ/CDS environments."""
+"""Transfer gateway — pull-from-outside, publish-inside job for DMZ environments."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+from waveos.registry.store import RegistryStore
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.transfer.gateway")
@@ -22,190 +23,153 @@ class TransferStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     TRANSFERRING = "transferring"
-    PUBLISHED = "published"
+    COMPLETED = "completed"
     FAILED = "failed"
 
 
 @dataclass
 class TransferJob:
-    """A single transfer job from outside source to inside mirror."""
     job_id: str
     bundle_id: str
     source_path: str
+    target_registry: str
+    channel: str = "prod"
     status: TransferStatus = TransferStatus.PENDING
-    scan_result: Optional[Dict[str, Any]] = None
-    approval: Optional[Dict[str, Any]] = None
-    receipt: Optional[Dict[str, Any]] = None
-    created_at: str = ""
+    scan_result: str = ""
+    approval_by: str = ""
+    sha256: str = ""
+    started_at: str = ""
     completed_at: str = ""
     error: str = ""
+    receipt: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
             "job_id": self.job_id,
             "bundle_id": self.bundle_id,
             "source_path": self.source_path,
+            "target_registry": self.target_registry,
+            "channel": self.channel,
             "status": self.status.value,
             "scan_result": self.scan_result,
-            "approval": self.approval,
-            "receipt": self.receipt,
-            "created_at": self.created_at or utc_now().isoformat(),
+            "approval_by": self.approval_by,
+            "sha256": self.sha256,
+            "started_at": self.started_at,
             "completed_at": self.completed_at,
             "error": self.error,
+            "receipt": self.receipt,
         }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> TransferJob:
-        return cls(
-            job_id=d.get("job_id", ""),
-            bundle_id=d.get("bundle_id", ""),
-            source_path=d.get("source_path", ""),
-            status=TransferStatus(d.get("status", "pending")),
-            scan_result=d.get("scan_result"),
-            approval=d.get("approval"),
-            receipt=d.get("receipt"),
-            created_at=d.get("created_at", ""),
-            completed_at=d.get("completed_at", ""),
-            error=d.get("error", ""),
-        )
-
-
-ScanHook = Callable[[Path], Dict[str, Any]]
-ApprovalHook = Callable[[TransferJob], bool]
 
 
 class TransferGateway:
-    """Manages controlled transfers from outside source to inside registry mirror.
+    """Controlled-transfer gateway: pull from source, scan, approve, publish to internal registry.
 
-    Supports:
-    - Scanning hooks (malware, policy)
-    - Approval workflows
-    - Signed transfer receipts
-    - Chain-of-custody audit trail
+    Operates in a DMZ-like zone between external CI/CD and internal secure networks.
     """
 
     def __init__(
         self,
         staging_dir: Path,
-        mirror_registry_root: Path,
-        scan_hooks: Optional[List[ScanHook]] = None,
-        approval_hook: Optional[ApprovalHook] = None,
+        target_store: RegistryStore,
+        scan_hook: Optional[Callable[[Path], str]] = None,
+        approval_hook: Optional[Callable[[str, str], str]] = None,
+        one_way: bool = True,
     ) -> None:
         self.staging_dir = staging_dir
-        self.mirror_registry_root = mirror_registry_root
-        self._scan_hooks = scan_hooks or []
-        self._approval_hook = approval_hook
-        self._jobs: Dict[str, TransferJob] = {}
         self.staging_dir.mkdir(parents=True, exist_ok=True)
-        self.mirror_registry_root.mkdir(parents=True, exist_ok=True)
+        self.target = target_store
+        self._scan_hook = scan_hook
+        self._approval_hook = approval_hook
+        self.one_way = one_way
+        self._jobs: List[TransferJob] = []
 
-    def submit(self, source_path: Path, bundle_id: str = "") -> TransferJob:
+    def submit(self, bundle_dir: Path, bundle_id: str, channel: str = "prod") -> TransferJob:
         """Submit a bundle for transfer through the gateway."""
-        if not source_path.exists():
-            raise ValueError(f"Source path does not exist: {source_path}")
-        job_id = f"xfer-{utc_now().strftime('%Y%m%d%H%M%S')}-{hashlib.sha256(str(source_path).encode()).hexdigest()[:8]}"
-        if not bundle_id:
-            manifest_path = source_path / "bundle.json" if source_path.is_dir() else source_path
-            if manifest_path.exists():
-                try:
-                    data = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    bundle_id = data.get("bundle_id", job_id)
-                except (json.JSONDecodeError, OSError):
-                    bundle_id = job_id
+        job_id = f"xfer-{utc_now().strftime('%Y%m%d%H%M%S')}-{bundle_id[:12]}"
         staging = self.staging_dir / job_id
-        if source_path.is_dir():
-            shutil.copytree(source_path, staging)
-        else:
-            staging.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(source_path, staging / source_path.name)
-        job = TransferJob(job_id=job_id, bundle_id=bundle_id, source_path=str(source_path), created_at=utc_now().isoformat())
-        self._jobs[job_id] = job
-        logger.info("Transfer job submitted: %s for bundle %s", job_id, bundle_id)
+        staging.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(bundle_dir, staging / "bundle", dirs_exist_ok=True)
+
+        manifest_path = staging / "bundle" / "bundle.json"
+        sha = ""
+        if manifest_path.exists():
+            sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+        job = TransferJob(
+            job_id=job_id,
+            bundle_id=bundle_id,
+            source_path=str(bundle_dir),
+            target_registry=str(self.target.root),
+            channel=channel,
+            sha256=sha,
+            started_at=utc_now().isoformat(),
+        )
+        self._jobs.append(job)
         return job
 
-    def scan(self, job_id: str) -> Dict[str, Any]:
-        """Run scanning hooks on a staged transfer."""
-        job = self._jobs.get(job_id)
-        if not job:
-            return {"ok": False, "error": "Job not found"}
+    def process(self, job: TransferJob) -> TransferJob:
+        """Process a submitted transfer job through scan → approve → transfer pipeline."""
+        # Scan
         job.status = TransferStatus.SCANNING
-        staging = self.staging_dir / job_id
-        results: List[Dict[str, Any]] = []
-        all_clean = True
-        for hook in self._scan_hooks:
+        staged_bundle = self.staging_dir / job.job_id / "bundle"
+        if self._scan_hook:
             try:
-                result = hook(staging)
-                results.append(result)
-                if not result.get("clean", True):
-                    all_clean = False
+                job.scan_result = self._scan_hook(staged_bundle)
+                if job.scan_result in ("blocked", "malware"):
+                    job.status = TransferStatus.FAILED
+                    job.error = f"Scan blocked: {job.scan_result}"
+                    return job
             except Exception as exc:
-                results.append({"hook": "error", "clean": False, "error": str(exc)})
-                all_clean = False
-        job.scan_result = {"clean": all_clean, "results": results, "scanned_at": utc_now().isoformat()}
-        if not all_clean:
-            job.status = TransferStatus.FAILED
-            job.error = "Scan failed"
-        elif self._approval_hook:
-            job.status = TransferStatus.AWAITING_APPROVAL
+                job.scan_result = f"error: {exc}"
+        else:
+            job.scan_result = "clean"
+
+        # Approve
+        job.status = TransferStatus.AWAITING_APPROVAL
+        if self._approval_hook:
+            try:
+                approval = self._approval_hook(job.bundle_id, job.channel)
+                if approval.startswith("approved"):
+                    job.approval_by = approval.split(":")[-1] if ":" in approval else "auto"
+                    job.status = TransferStatus.APPROVED
+                else:
+                    job.status = TransferStatus.REJECTED
+                    job.error = f"Approval rejected: {approval}"
+                    return job
+            except Exception as exc:
+                job.error = f"Approval error: {exc}"
+                job.status = TransferStatus.FAILED
+                return job
         else:
             job.status = TransferStatus.APPROVED
-        return job.scan_result
+            job.approval_by = "auto"
 
-    def approve(self, job_id: str, approver: str = "", approved: bool = True) -> Dict[str, Any]:
-        """Approve or reject a transfer."""
-        job = self._jobs.get(job_id)
-        if not job:
-            return {"ok": False, "error": "Job not found"}
-        job.approval = {"approved": approved, "approver": approver, "timestamp": utc_now().isoformat()}
-        if approved:
-            job.status = TransferStatus.APPROVED
-        else:
-            job.status = TransferStatus.REJECTED
-        return job.approval
-
-    def execute(self, job_id: str, channel: str = "prod") -> Dict[str, Any]:
-        """Execute the transfer: publish to inside mirror registry."""
-        job = self._jobs.get(job_id)
-        if not job:
-            return {"ok": False, "error": "Job not found"}
-        if job.status != TransferStatus.APPROVED:
-            return {"ok": False, "error": f"Job not approved (status: {job.status.value})"}
+        # Transfer
         job.status = TransferStatus.TRANSFERRING
-        staging = self.staging_dir / job_id
         try:
-            from waveos.registry.store import RegistryStore
-            store = RegistryStore(self.mirror_registry_root)
-            entry = store.publish(staging, channel=channel, publisher="transfer-gateway")
-            job.status = TransferStatus.PUBLISHED
+            entry = self.target.publish(staged_bundle, channel=job.channel, publisher=f"gateway:{job.job_id}")
+            job.status = TransferStatus.COMPLETED
             job.completed_at = utc_now().isoformat()
-            content_hash = hashlib.sha256(json.dumps(entry.to_dict(), sort_keys=True).encode()).hexdigest()
             job.receipt = {
-                "bundle_id": entry.bundle_id,
-                "channel": channel,
-                "published_at": entry.published_at,
-                "content_hash": content_hash,
-                "transfer_job_id": job_id,
-                "signed_at": utc_now().isoformat(),
+                "entry": entry.to_dict(),
+                "source_sha256": job.sha256,
+                "gateway_job_id": job.job_id,
+                "transferred_at": job.completed_at,
             }
-            logger.info("Transfer complete: %s -> mirror (%s)", job.bundle_id, channel)
-            return {"ok": True, "entry": entry.to_dict(), "receipt": job.receipt}
         except Exception as exc:
             job.status = TransferStatus.FAILED
             job.error = str(exc)
-            return {"ok": False, "error": str(exc)}
 
-    def get_job(self, job_id: str) -> Optional[TransferJob]:
-        return self._jobs.get(job_id)
+        return job
 
-    def list_jobs(self) -> List[TransferJob]:
-        return list(self._jobs.values())
+    def submit_and_process(self, bundle_dir: Path, bundle_id: str, channel: str = "prod") -> TransferJob:
+        job = self.submit(bundle_dir, bundle_id, channel)
+        return self.process(job)
 
-    def process(self, source_path: Path, bundle_id: str = "", channel: str = "prod", approver: str = "auto") -> Dict[str, Any]:
-        """Full pipeline: submit -> scan -> approve -> execute."""
-        job = self.submit(source_path, bundle_id)
-        scan = self.scan(job.job_id)
-        if not scan.get("clean", False):
-            return {"ok": False, "job_id": job.job_id, "status": job.status.value, "scan": scan}
-        if job.status == TransferStatus.AWAITING_APPROVAL:
-            self.approve(job.job_id, approver=approver, approved=True)
-        return self.execute(job.job_id, channel=channel)
+    @property
+    def jobs(self) -> List[TransferJob]:
+        return list(self._jobs)
+
+    def write_jobs(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps([j.to_dict() for j in self._jobs], indent=2) + "\n", encoding="utf-8")
