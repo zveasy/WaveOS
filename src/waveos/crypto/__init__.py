@@ -1,23 +1,19 @@
-"""WaveOS Crypto — public-key signing, KMS interface, anti-rollback controls."""
+"""WaveOS Crypto — enterprise-grade signing, key management, and anti-rollback."""
 
 from waveos.crypto.signing import (
+    KeyPair,
     generate_keypair,
     sign_bundle_ed25519,
     verify_bundle_ed25519,
-    load_public_key,
-    load_private_key,
+    sign_data,
+    verify_signature,
 )
-from waveos.crypto.kms import KMSProvider, EnvKMSProvider, FileKMSProvider
-from waveos.crypto.anti_rollback import (
-    VersionEpoch,
-    check_anti_rollback,
-    get_current_epoch,
-    record_epoch,
-)
+from waveos.crypto.keystore import KeyStore, KeyRecord, KeyStatus
+from waveos.crypto.anti_rollback import VersionEpoch, ReleaseEpochStore, check_anti_rollback
 
 __all__ = [
-    "generate_keypair", "sign_bundle_ed25519", "verify_bundle_ed25519",
-    "load_public_key", "load_private_key",
-    "KMSProvider", "EnvKMSProvider", "FileKMSProvider",
-    "VersionEpoch", "check_anti_rollback", "get_current_epoch", "record_epoch",
+    "KeyPair", "generate_keypair", "sign_bundle_ed25519", "verify_bundle_ed25519",
+    "sign_data", "verify_signature",
+    "KeyStore", "KeyRecord", "KeyStatus",
+    "VersionEpoch", "ReleaseEpochStore", "check_anti_rollback",
 ]
