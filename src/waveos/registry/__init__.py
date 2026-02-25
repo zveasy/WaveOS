@@ -1,6 +1,6 @@
 """WaveOS Registry — secure artifact repository for bundles."""
 
 from waveos.registry.store import RegistryStore, RegistryEntry
-from waveos.registry.mirror import MirrorSync, SyncResult, TransferReceipt
+from waveos.registry.mirror import RegistryMirror, TransferReceipt
 
-__all__ = ["RegistryStore", "RegistryEntry", "MirrorSync", "SyncResult", "TransferReceipt"]
+__all__ = ["RegistryStore", "RegistryEntry", "RegistryMirror", "TransferReceipt"]

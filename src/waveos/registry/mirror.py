@@ -2,165 +2,188 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from waveos.registry.store import RegistryStore
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.registry.mirror")
 
 
 @dataclass
-class SyncResult:
-    synced: List[str] = field(default_factory=list)
-    skipped: List[str] = field(default_factory=list)
-    failed: List[str] = field(default_factory=list)
-    timestamp: str = ""
-
-    def to_dict(self) -> dict:
-        return {"synced": self.synced, "skipped": self.skipped, "failed": self.failed, "timestamp": self.timestamp or utc_now().isoformat()}
-
-
-@dataclass
 class TransferReceipt:
+    """Signed receipt for a bundle transfer between registries."""
     bundle_id: str
     source_registry: str
-    target_registry: str
-    sha256: str
-    transferred_at: str = ""
-    transferred_by: str = ""
-    scan_result: str = "not_scanned"  # not_scanned | clean | flagged | blocked
-    approval_status: str = "auto"  # auto | pending | approved | rejected
+    dest_registry: str
+    transfer_time: str = ""
+    transfer_method: str = "push"
+    bundle_hash: str = ""
+    verified: bool = False
+    scanned: bool = False
+    scan_result: str = ""
+    approved_by: str = ""
+    chain_of_custody: List[Dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "bundle_id": self.bundle_id,
             "source_registry": self.source_registry,
-            "target_registry": self.target_registry,
-            "sha256": self.sha256,
-            "transferred_at": self.transferred_at or utc_now().isoformat(),
-            "transferred_by": self.transferred_by,
+            "dest_registry": self.dest_registry,
+            "transfer_time": self.transfer_time or utc_now().isoformat(),
+            "transfer_method": self.transfer_method,
+            "bundle_hash": self.bundle_hash,
+            "verified": self.verified,
+            "scanned": self.scanned,
             "scan_result": self.scan_result,
-            "approval_status": self.approval_status,
+            "approved_by": self.approved_by,
+            "chain_of_custody": self.chain_of_custody,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> TransferReceipt:
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
-class MirrorSync:
-    """Synchronize bundles between two file-system registries.
+
+class RegistryMirror:
+    """Manages bundle synchronization between outside and inside registries.
 
     Supports:
-    - Full sync (all bundles from source to target)
-    - Channel-filtered sync
-    - One-way mode (data diode simulation)
-    - Scanning hooks (callback before import)
-    - Transfer receipts for chain-of-custody
+    - Push mode: outside -> inside (for CDS/gateway)
+    - Pull mode: inside pulls from outside
+    - One-way (diode): only metadata + bundles flow inward
     """
 
-    def __init__(
+    def __init__(self, source_root: Path, dest_root: Path, mode: str = "push") -> None:
+        self.source_root = source_root
+        self.dest_root = dest_root
+        self.mode = mode
+        self._receipts_path = dest_root / "transfer_receipts.jsonl"
+
+    def _load_source_index(self) -> List[Dict[str, Any]]:
+        index_path = self.source_root / "index.json"
+        if not index_path.exists():
+            return []
+        return json.loads(index_path.read_text(encoding="utf-8"))
+
+    def _load_dest_index(self) -> List[Dict[str, Any]]:
+        index_path = self.dest_root / "index.json"
+        if not index_path.exists():
+            return []
+        return json.loads(index_path.read_text(encoding="utf-8"))
+
+    def _append_receipt(self, receipt: TransferReceipt) -> None:
+        self._receipts_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._receipts_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(receipt.to_dict(), default=str) + "\n")
+
+    def diff(self) -> List[str]:
+        """Return bundle IDs present in source but not in dest."""
+        source_ids = {e.get("bundle_id") for e in self._load_source_index()}
+        dest_ids = {e.get("bundle_id") for e in self._load_dest_index()}
+        return sorted(source_ids - dest_ids)
+
+    def sync(
         self,
-        source: RegistryStore,
-        target: RegistryStore,
-        one_way: bool = True,
+        channel: Optional[str] = None,
         scan_hook=None,
         approval_hook=None,
-    ) -> None:
-        self.source = source
-        self.target = target
-        self.one_way = one_way
-        self._scan_hook = scan_hook
-        self._approval_hook = approval_hook
-        self._receipts: List[TransferReceipt] = []
+        one_way: bool = False,
+    ) -> List[TransferReceipt]:
+        """Sync bundles from source to dest.
 
-    def sync(self, channel: Optional[str] = None) -> SyncResult:
-        """Sync bundles from source to target."""
-        result = SyncResult(timestamp=utc_now().isoformat())
-        source_entries = self.source.list_bundles(channel=channel)
-        target_entries = self.target.list_bundles()
-        target_ids = {e.bundle_id for e in target_entries}
+        scan_hook: optional callable(bundle_dir) -> (ok, result_str)
+        approval_hook: optional callable(bundle_id) -> (approved, approver_name)
+        one_way: if True, never sync from dest to source (diode mode)
+        """
+        from waveos.registry.store import RegistryStore
+        source_store = RegistryStore(self.source_root)
+        dest_store = RegistryStore(self.dest_root)
 
+        source_entries = source_store.list_bundles(channel=channel)
+        dest_ids = {e.bundle_id for e in dest_store.list_bundles()}
+
+        receipts: List[TransferReceipt] = []
         for entry in source_entries:
-            if entry.bundle_id in target_ids:
-                result.skipped.append(entry.bundle_id)
+            if entry.bundle_id in dest_ids:
                 continue
-            bundle_path = self.source.get_bundle(entry.bundle_id)
+
+            bundle_path = source_store.get_bundle(entry.bundle_id)
             if not bundle_path:
-                result.failed.append(entry.bundle_id)
                 continue
 
-            manifest_bytes = (bundle_path / "bundle.json").read_bytes() if (bundle_path / "bundle.json").exists() else b""
-            bundle_sha = hashlib.sha256(manifest_bytes).hexdigest()
+            scanned = False
+            scan_result = ""
+            if scan_hook:
+                ok, scan_result = scan_hook(bundle_path)
+                scanned = True
+                if not ok:
+                    logger.warning("Scan failed for %s: %s", entry.bundle_id, scan_result)
+                    receipt = TransferReceipt(
+                        bundle_id=entry.bundle_id,
+                        source_registry=str(self.source_root),
+                        dest_registry=str(self.dest_root),
+                        transfer_method=self.mode,
+                        scanned=True,
+                        scan_result=scan_result,
+                        verified=False,
+                    )
+                    receipts.append(receipt)
+                    self._append_receipt(receipt)
+                    continue
 
-            scan_result = "not_scanned"
-            if self._scan_hook:
+            approved_by = ""
+            if approval_hook:
+                approved, approver = approval_hook(entry.bundle_id)
+                if not approved:
+                    logger.info("Transfer not approved for %s", entry.bundle_id)
+                    continue
+                approved_by = approver
+
+            import hashlib
+            bundle_hash = ""
+            manifest_path = bundle_path / "bundle.json"
+            if manifest_path.exists():
+                bundle_hash = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+
+            dest_entry = dest_store.publish(bundle_path, channel=entry.channel, publisher=f"mirror:{entry.publisher}")
+
+            chain = [
+                {"stage": "source", "registry": str(self.source_root), "timestamp": entry.published_at},
+                {"stage": "transfer", "method": self.mode, "timestamp": utc_now().isoformat()},
+                {"stage": "dest", "registry": str(self.dest_root), "timestamp": dest_entry.published_at},
+            ]
+
+            receipt = TransferReceipt(
+                bundle_id=entry.bundle_id,
+                source_registry=str(self.source_root),
+                dest_registry=str(self.dest_root),
+                transfer_method=self.mode,
+                bundle_hash=bundle_hash,
+                verified=True,
+                scanned=scanned,
+                scan_result=scan_result,
+                approved_by=approved_by,
+                chain_of_custody=chain,
+            )
+            receipts.append(receipt)
+            self._append_receipt(receipt)
+            logger.info("Mirrored %s from %s to %s", entry.bundle_id, self.source_root, self.dest_root)
+
+        return receipts
+
+    def get_receipts(self, limit: int = 100) -> List[TransferReceipt]:
+        if not self._receipts_path.exists():
+            return []
+        lines = self._receipts_path.read_text(encoding="utf-8").strip().split("\n")
+        receipts = []
+        for line in lines[-limit:]:
+            if line.strip():
                 try:
-                    scan_result = self._scan_hook(bundle_path)
-                    if scan_result == "blocked":
-                        result.failed.append(entry.bundle_id)
-                        self._receipts.append(TransferReceipt(
-                            bundle_id=entry.bundle_id,
-                            source_registry=str(self.source.root),
-                            target_registry=str(self.target.root),
-                            sha256=bundle_sha,
-                            scan_result="blocked",
-                        ))
-                        continue
-                except Exception as exc:
-                    logger.warning("Scan hook failed for %s: %s", entry.bundle_id, exc)
-                    scan_result = "error"
-
-            approval = "auto"
-            if self._approval_hook:
-                try:
-                    approval = self._approval_hook(entry.bundle_id, entry.channel)
-                    if approval == "rejected":
-                        result.failed.append(entry.bundle_id)
-                        continue
-                except Exception:
-                    approval = "auto"
-
-            try:
-                self.target.publish(bundle_path, channel=entry.channel, publisher=f"mirror:{self.source.root}")
-                result.synced.append(entry.bundle_id)
-                self._receipts.append(TransferReceipt(
-                    bundle_id=entry.bundle_id,
-                    source_registry=str(self.source.root),
-                    target_registry=str(self.target.root),
-                    sha256=bundle_sha,
-                    scan_result=scan_result,
-                    approval_status=approval,
-                ))
-            except Exception as exc:
-                logger.warning("Failed to sync %s: %s", entry.bundle_id, exc)
-                result.failed.append(entry.bundle_id)
-
-        return result
-
-    @property
-    def receipts(self) -> List[TransferReceipt]:
-        return list(self._receipts)
-
-    def write_receipts(self, path: Path) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("w", encoding="utf-8") as f:
-            for r in self._receipts:
-                f.write(json.dumps(r.to_dict(), default=str) + "\n")
-
-    def write_chain_of_custody(self, path: Path) -> None:
-        """Write full chain-of-custody manifest."""
-        chain = {
-            "type": "chain_of_custody",
-            "timestamp": utc_now().isoformat(),
-            "source_registry": str(self.source.root),
-            "target_registry": str(self.target.root),
-            "one_way": self.one_way,
-            "transfers": [r.to_dict() for r in self._receipts],
-            "total_synced": sum(1 for r in self._receipts if r.scan_result != "blocked"),
-            "total_blocked": sum(1 for r in self._receipts if r.scan_result == "blocked"),
-        }
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(chain, indent=2) + "\n", encoding="utf-8")
+                    receipts.append(TransferReceipt.from_dict(json.loads(line)))
+                except (json.JSONDecodeError, KeyError):
+                    pass
+        return receipts

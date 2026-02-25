@@ -1,4 +1,4 @@
-"""WaveOS Registry Client — mTLS, resumable downloads, chunk integrity."""
+"""WaveOS Registry Client — secure bundle download with mTLS, resumable transfers, and integrity verification."""
 
 from __future__ import annotations
 
@@ -6,160 +6,153 @@ import hashlib
 import json
 import os
 import ssl
-import urllib.request
-import urllib.error
-from dataclasses import dataclass
+import tarfile
+import tempfile
+import io
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.registry.client")
 
 
-@dataclass
-class RegistryClientConfig:
-    base_url: str = "https://localhost:9200"
-    auth_token: str = ""
-    tls_cert: str = ""
-    tls_key: str = ""
-    tls_ca: str = ""
-    verify_ssl: bool = True
-    chunk_size: int = 1024 * 1024  # 1MB chunks for resumable downloads
-    max_retries: int = 3
-    timeout_sec: float = 30.0
-
-    @classmethod
-    def from_env(cls) -> RegistryClientConfig:
-        return cls(
-            base_url=os.getenv("WAVEOS_REGISTRY_URL", "https://localhost:9200"),
-            auth_token=os.getenv("WAVEOS_REGISTRY_TOKEN", ""),
-            tls_cert=os.getenv("WAVEOS_REGISTRY_CLIENT_CERT", ""),
-            tls_key=os.getenv("WAVEOS_REGISTRY_CLIENT_KEY", ""),
-            tls_ca=os.getenv("WAVEOS_REGISTRY_CA", ""),
-            verify_ssl=os.getenv("WAVEOS_REGISTRY_VERIFY_SSL", "true").lower() in ("1", "true"),
-            timeout_sec=float(os.getenv("WAVEOS_REGISTRY_TIMEOUT", "30")),
-        )
-
-
 class RegistryClient:
-    """HTTP client for WaveOS registry with mTLS and resumable downloads."""
+    """Client for the WaveOS registry server."""
 
-    def __init__(self, config: Optional[RegistryClientConfig] = None) -> None:
-        self.config = config or RegistryClientConfig.from_env()
-        self._ssl_ctx = self._build_ssl_context()
+    def __init__(
+        self,
+        base_url: str = "https://localhost:9200",
+        token: str = "",
+        tls_cert: str = "",
+        tls_key: str = "",
+        tls_ca: str = "",
+        timeout: float = 30.0,
+        chunk_size: int = 1024 * 1024,
+    ) -> None:
+        self.base_url = base_url.rstrip("/")
+        self.token = token or os.getenv("WAVEOS_REGISTRY_TOKEN", "")
+        self.timeout = timeout
+        self.chunk_size = chunk_size
+        self._ssl_ctx: Optional[ssl.SSLContext] = None
+        tls_cert = tls_cert or os.getenv("WAVEOS_REGISTRY_CLIENT_CERT", "")
+        tls_key = tls_key or os.getenv("WAVEOS_REGISTRY_CLIENT_KEY", "")
+        tls_ca = tls_ca or os.getenv("WAVEOS_REGISTRY_CLIENT_CA", "")
+        if tls_cert and tls_key:
+            self._ssl_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            self._ssl_ctx.load_cert_chain(tls_cert, tls_key)
+            if tls_ca:
+                self._ssl_ctx.load_verify_locations(tls_ca)
+            else:
+                self._ssl_ctx.check_hostname = False
+                self._ssl_ctx.verify_mode = ssl.CERT_NONE
+        elif self.base_url.startswith("https"):
+            self._ssl_ctx = ssl.create_default_context()
+            if tls_ca:
+                self._ssl_ctx.load_verify_locations(tls_ca)
 
-    def _build_ssl_context(self) -> Optional[ssl.SSLContext]:
-        if not self.config.base_url.startswith("https"):
-            return None
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        if self.config.tls_cert and self.config.tls_key:
-            ctx.load_cert_chain(self.config.tls_cert, self.config.tls_key)
-        if self.config.tls_ca:
-            ctx.load_verify_locations(self.config.tls_ca)
-        elif not self.config.verify_ssl:
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        return ctx
+    def _headers(self) -> Dict[str, str]:
+        h: Dict[str, str] = {"User-Agent": "waveos-agent/1.0"}
+        if self.token:
+            h["Authorization"] = f"Bearer {self.token}"
+        return h
 
-    def _request(self, method: str, path: str, body: Optional[bytes] = None, headers: Optional[Dict[str, str]] = None) -> tuple[int, bytes, Dict[str, str]]:
-        url = f"{self.config.base_url.rstrip('/')}{path}"
-        req = urllib.request.Request(url, data=body, method=method)
-        req.add_header("Content-Type", "application/json")
-        if self.config.auth_token:
-            req.add_header("Authorization", f"Bearer {self.config.auth_token}")
-        if headers:
-            for k, v in headers.items():
-                req.add_header(k, v)
+    def _request(self, method: str, path: str, data: Optional[bytes] = None, extra_headers: Optional[Dict[str, str]] = None) -> tuple:
+        url = f"{self.base_url}{path}"
+        headers = {**self._headers(), **(extra_headers or {})}
+        req = Request(url, data=data, headers=headers, method=method)
         try:
-            resp = urllib.request.urlopen(req, timeout=self.config.timeout_sec, context=self._ssl_ctx)
-            resp_headers = {k.lower(): v for k, v in resp.getheaders()}
-            return resp.status, resp.read(), resp_headers
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(), {}
-        except (urllib.error.URLError, OSError) as e:
-            logger.warning("Registry request failed: %s", e)
-            return 0, str(e).encode(), {}
+            ctx = self._ssl_ctx if self.base_url.startswith("https") else None
+            resp = urlopen(req, timeout=self.timeout, context=ctx)
+            return resp.status, resp.read(), dict(resp.headers)
+        except HTTPError as exc:
+            return exc.code, exc.read(), dict(exc.headers)
+        except (URLError, OSError) as exc:
+            logger.warning("Registry request failed: %s", exc)
+            return 0, b"", {}
 
     def list_bundles(self, channel: Optional[str] = None) -> List[Dict[str, Any]]:
         path = "/v1/bundles"
         if channel:
             path += f"?channel={channel}"
-        code, body, _ = self._request("GET", path)
-        if code == 200:
+        status, body, _ = self._request("GET", path)
+        if status == 200:
             return json.loads(body)
         return []
 
     def get_entry(self, bundle_id: str) -> Optional[Dict[str, Any]]:
-        code, body, _ = self._request("GET", f"/v1/bundles/{bundle_id}")
-        if code == 200:
+        status, body, _ = self._request("GET", f"/v1/bundles/{bundle_id}")
+        if status == 200:
             return json.loads(body)
         return None
 
-    def download_bundle(self, bundle_id: str, dest_dir: Path, file_name: str = "bundle.json") -> Optional[Path]:
-        """Download a bundle file with resumable support and integrity verification."""
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        dest_path = dest_dir / file_name
-        downloaded = 0
-        if dest_path.exists():
-            downloaded = dest_path.stat().st_size
+    def download_bundle(self, bundle_id: str, output_dir: Path, resumable: bool = True) -> Optional[Path]:
+        """Download a bundle with optional resumable transfer and integrity verification."""
+        output_dir.mkdir(parents=True, exist_ok=True)
+        cache_path = output_dir / f"{bundle_id}.tar.gz"
 
-        for attempt in range(self.config.max_retries):
-            headers: Dict[str, str] = {}
-            if downloaded > 0:
-                headers["Range"] = f"bytes={downloaded}-"
-                logger.info("Resuming download from byte %d (attempt %d)", downloaded, attempt + 1)
+        existing_size = cache_path.stat().st_size if cache_path.exists() else 0
 
-            code, data, resp_headers = self._request(
-                "GET",
-                f"/v1/bundles/{bundle_id}/download?file={file_name}",
-                headers=headers,
+        if resumable and existing_size > 0:
+            status, chunk, headers = self._request(
+                "GET", f"/v1/bundles/{bundle_id}/download",
+                extra_headers={"Range": f"bytes={existing_size}-"},
             )
-
-            if code == 206:
-                with dest_path.open("ab") as f:
-                    f.write(data)
-                downloaded += len(data)
-                content_range = resp_headers.get("content-range", "")
-                if content_range:
-                    total_str = content_range.split("/")[-1]
-                    if total_str.isdigit() and downloaded >= int(total_str):
-                        break
-            elif code == 200:
-                dest_path.write_bytes(data)
-                break
-            else:
-                if attempt < self.config.max_retries - 1:
-                    logger.warning("Download failed (code=%d), retrying...", code)
-                    continue
+            if status == 206:
+                with cache_path.open("ab") as f:
+                    f.write(chunk)
+                logger.info("Resumed download for %s from byte %d", bundle_id, existing_size)
+            elif status == 200:
+                cache_path.write_bytes(chunk)
+        else:
+            status, content, headers = self._request("GET", f"/v1/bundles/{bundle_id}/download")
+            if status != 200:
+                logger.warning("Download failed: status=%d", status)
                 return None
+            cache_path.write_bytes(content)
 
-        expected_sha = resp_headers.get("x-content-sha256", "")
-        if expected_sha:
-            actual_sha = hashlib.sha256(dest_path.read_bytes()).hexdigest()
-            if actual_sha != expected_sha:
-                logger.error("Integrity check failed: expected %s, got %s", expected_sha[:16], actual_sha[:16])
-                dest_path.unlink(missing_ok=True)
-                return None
-            logger.info("Integrity verified: %s", actual_sha[:16])
+        expected_hash = ""
+        if isinstance(headers, dict):
+            expected_hash = headers.get("X-Content-SHA256", headers.get("x-content-sha256", ""))
 
-        return dest_path
+        actual_hash = hashlib.sha256(cache_path.read_bytes()).hexdigest()
+        if expected_hash and actual_hash != expected_hash:
+            logger.error("Integrity check failed for %s: expected %s, got %s", bundle_id, expected_hash[:16], actual_hash[:16])
+            cache_path.unlink(missing_ok=True)
+            return None
 
-    def publish(self, bundle_dir: str, channel: str = "dev") -> Optional[Dict[str, Any]]:
-        body = json.dumps({"bundle_dir": bundle_dir}).encode()
-        code, resp, _ = self._request("POST", f"/v1/bundles?channel={channel}", body=body)
-        if code in (200, 201):
-            return json.loads(resp)
-        logger.warning("Publish failed: code=%d body=%s", code, resp[:200])
+        extract_dir = output_dir / bundle_id
+        extract_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with tarfile.open(str(cache_path), "r:gz") as tar:
+                tar.extractall(str(extract_dir), filter="data")
+        except (tarfile.TarError, OSError) as exc:
+            logger.error("Extract failed for %s: %s", bundle_id, exc)
+            return None
+
+        subdirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+        return subdirs[0] if subdirs else extract_dir
+
+    def publish_bundle(self, bundle_dir: Path, channel: str = "dev") -> Optional[Dict[str, Any]]:
+        """Publish a bundle to the registry."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(str(bundle_dir), arcname=bundle_dir.name)
+        data = buf.getvalue()
+        status, body, _ = self._request(
+            "POST", "/v1/bundles/publish",
+            data=data,
+            extra_headers={"Content-Type": "application/gzip", "X-Channel": channel},
+        )
+        if status in (200, 201):
+            return json.loads(body)
+        logger.warning("Publish failed: status=%d", status)
         return None
 
-    def promote(self, bundle_id: str, target_channel: str) -> Optional[Dict[str, Any]]:
-        body = json.dumps({"bundle_id": bundle_id, "target_channel": target_channel}).encode()
-        code, resp, _ = self._request("POST", "/v1/promote", body=body)
-        if code == 200:
-            return json.loads(resp)
-        return None
-
-    def health(self) -> bool:
-        code, _, _ = self._request("GET", "/v1/health")
-        return code == 200
+    def health(self) -> Dict[str, Any]:
+        status, body, _ = self._request("GET", "/v1/health")
+        if status == 200:
+            return json.loads(body)
+        return {"status": "unreachable", "code": status}

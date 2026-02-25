@@ -1,4 +1,4 @@
-"""WaveOS Registry Server — HTTP registry with mTLS, auth, rate limiting, and resumable downloads."""
+"""WaveOS Registry Server — secure HTTP artifact distribution with mTLS, auth, rate limiting, and resumable downloads."""
 
 from __future__ import annotations
 
@@ -9,118 +9,117 @@ import ssl
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import urlparse, parse_qs
 
-from waveos.registry.store import RegistryStore, RegistryEntry
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.registry.server")
 
 
-@dataclass
-class RateLimitEntry:
-    count: int = 0
-    window_start: float = 0.0
+class RateLimiter:
+    """Token-bucket rate limiter per client identity."""
 
-
-@dataclass
-class RegistryServerConfig:
-    host: str = "0.0.0.0"
-    port: int = 9200
-    registry_root: Path = Path("out/registry")
-    tls_cert: str = ""
-    tls_key: str = ""
-    tls_ca: str = ""
-    require_client_cert: bool = False
-    rate_limit_per_minute: int = 60
-    rate_limit_downloads_per_minute: int = 30
-    allowed_publishers: List[str] = field(default_factory=list)
-    require_ci_for_prod: bool = True
-    auth_tokens: Dict[str, str] = field(default_factory=dict)
-
-    @classmethod
-    def from_env(cls) -> RegistryServerConfig:
-        tokens_raw = os.getenv("WAVEOS_REGISTRY_AUTH_TOKENS", "")
-        tokens = {}
-        if tokens_raw:
-            for pair in tokens_raw.split(","):
-                if "=" in pair:
-                    k, v = pair.split("=", 1)
-                    tokens[k.strip()] = v.strip()
-        publishers_raw = os.getenv("WAVEOS_REGISTRY_ALLOWED_PUBLISHERS", "")
-        publishers = [p.strip() for p in publishers_raw.split(",") if p.strip()] if publishers_raw else []
-        return cls(
-            host=os.getenv("WAVEOS_REGISTRY_HOST", "0.0.0.0"),
-            port=int(os.getenv("WAVEOS_REGISTRY_PORT", "9200")),
-            registry_root=Path(os.getenv("WAVEOS_REGISTRY_ROOT", "out/registry")),
-            tls_cert=os.getenv("WAVEOS_REGISTRY_TLS_CERT", ""),
-            tls_key=os.getenv("WAVEOS_REGISTRY_TLS_KEY", ""),
-            tls_ca=os.getenv("WAVEOS_REGISTRY_TLS_CA", ""),
-            require_client_cert=os.getenv("WAVEOS_REGISTRY_REQUIRE_CLIENT_CERT", "").lower() in ("1", "true"),
-            rate_limit_per_minute=int(os.getenv("WAVEOS_REGISTRY_RATE_LIMIT", "60")),
-            allowed_publishers=publishers,
-            require_ci_for_prod=os.getenv("WAVEOS_REGISTRY_REQUIRE_CI_FOR_PROD", "true").lower() in ("1", "true"),
-            auth_tokens=tokens,
-        )
-
-
-class _RateLimiter:
-    def __init__(self, max_per_minute: int = 60) -> None:
-        self._max = max_per_minute
-        self._clients: Dict[str, RateLimitEntry] = {}
+    def __init__(self, rate: float = 10.0, burst: int = 50) -> None:
+        self._rate = rate
+        self._burst = burst
+        self._buckets: Dict[str, tuple] = {}
         self._lock = threading.Lock()
 
-    def check(self, client_id: str) -> bool:
+    def allow(self, client_id: str) -> bool:
         now = time.monotonic()
         with self._lock:
-            entry = self._clients.get(client_id)
-            if not entry or now - entry.window_start > 60:
-                self._clients[client_id] = RateLimitEntry(count=1, window_start=now)
+            if client_id not in self._buckets:
+                self._buckets[client_id] = (self._burst - 1, now)
                 return True
-            if entry.count >= self._max:
+            tokens, last = self._buckets[client_id]
+            elapsed = now - last
+            tokens = min(self._burst, tokens + elapsed * self._rate)
+            if tokens < 1:
                 return False
-            entry.count += 1
+            self._buckets[client_id] = (tokens - 1, now)
             return True
 
 
-class RegistryHandler(BaseHTTPRequestHandler):
+class DeviceAuthenticator:
+    """Authenticate devices via mTLS client certificate or bearer token."""
+
+    def __init__(self, allowed_devices_path: Optional[Path] = None, token_map: Optional[Dict[str, str]] = None) -> None:
+        self._allowed: Dict[str, Dict[str, Any]] = {}
+        self._tokens = token_map or {}
+        if allowed_devices_path and allowed_devices_path.exists():
+            try:
+                data = json.loads(allowed_devices_path.read_text(encoding="utf-8"))
+                for device in data.get("devices", []):
+                    self._allowed[device["device_id"]] = device
+            except (json.JSONDecodeError, KeyError):
+                pass
+        env_tokens = os.getenv("WAVEOS_REGISTRY_AUTH_TOKENS", "")
+        if env_tokens:
+            for pair in env_tokens.split(","):
+                if "=" in pair:
+                    tok, dev = pair.strip().split("=", 1)
+                    self._tokens[tok.strip()] = dev.strip()
+
+    def authenticate_token(self, auth_header: str) -> Optional[str]:
+        if not auth_header.startswith("Bearer "):
+            return None
+        token = auth_header[7:].strip()
+        return self._tokens.get(token)
+
+    def authenticate_cert(self, cert_cn: str) -> Optional[str]:
+        if cert_cn in self._allowed:
+            return cert_cn
+        for dev_id, info in self._allowed.items():
+            if info.get("cert_cn") == cert_cn:
+                return dev_id
+        return cert_cn if cert_cn else None
+
+    def get_device_channels(self, device_id: str) -> List[str]:
+        info = self._allowed.get(device_id, {})
+        return info.get("channels", ["dev", "staging", "prod", "mission-critical"])
+
+    def can_publish(self, device_id: str, channel: str) -> bool:
+        info = self._allowed.get(device_id, {})
+        role = info.get("role", "agent")
+        if role == "ci" or role == "admin":
+            return True
+        if channel in ("prod", "mission-critical"):
+            return False
+        return True
+
+
+class RegistryRequestHandler(BaseHTTPRequestHandler):
+    """HTTP handler for registry operations."""
+
     server: RegistryHTTPServer
 
-    def log_message(self, format: str, *args: Any) -> None:
-        logger.debug("registry-http %s", format % args)
+    def log_message(self, format, *args):
+        logger.debug("Registry HTTP: %s", format % args)
 
-    def _client_id(self) -> str:
-        peer = getattr(self.connection, "getpeername", lambda: ("unknown", 0))()
-        cn = ""
+    def _get_device_id(self) -> Optional[str]:
+        auth = self.headers.get("Authorization", "")
+        if auth:
+            device_id = self.server.authenticator.authenticate_token(auth)
+            if device_id:
+                return device_id
         if hasattr(self.connection, "getpeercert"):
             cert = self.connection.getpeercert()
             if cert:
                 for rdn in cert.get("subject", ()):
                     for attr, val in rdn:
                         if attr == "commonName":
-                            cn = val
-        return cn or (peer[0] if isinstance(peer, tuple) else "unknown")
+                            return self.server.authenticator.authenticate_cert(val)
+        return os.getenv("WAVEOS_REGISTRY_DEFAULT_DEVICE", "anonymous")
 
-    def _authenticate(self) -> Optional[str]:
-        auth = self.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:].strip()
-            identity = self.server.config.auth_tokens.get(token)
-            if identity:
-                return identity
-        client_cn = self._client_id()
-        if client_cn and client_cn != "unknown":
-            return client_cn
-        return None
+    def _check_rate(self, device_id: str) -> bool:
+        if not self.server.rate_limiter.allow(device_id):
+            self.send_error(429, "Rate limit exceeded")
+            return False
+        return True
 
-    def _check_rate_limit(self) -> bool:
-        client = self._client_id()
-        return self.server.rate_limiter.check(client)
-
-    def _send_json(self, code: int, data: Any) -> None:
+    def _json_response(self, code: int, data: Any) -> None:
         body = json.dumps(data, indent=2, default=str).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
@@ -128,77 +127,83 @@ class RegistryHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _send_error_json(self, code: int, message: str) -> None:
-        self._send_json(code, {"error": message})
-
     def do_GET(self) -> None:
-        if not self._check_rate_limit():
-            self._send_error_json(429, "Rate limit exceeded")
+        device_id = self._get_device_id()
+        if not device_id:
+            self.send_error(401, "Unauthorized")
             return
+        if not self._check_rate(device_id):
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
+        params = parse_qs(parsed.query)
 
         if path == "/v1/bundles":
-            params = parse_qs(parsed.query)
             channel = params.get("channel", [None])[0]
-            entries = self.server.store.list_bundles(channel=channel)
-            self._send_json(200, [e.to_dict() for e in entries])
+            from waveos.registry.store import RegistryStore
+            store = RegistryStore(self.server.registry_root)
+            entries = store.list_bundles(channel=channel)
+            allowed_channels = self.server.authenticator.get_device_channels(device_id)
+            entries = [e for e in entries if e.channel in allowed_channels]
+            self._json_response(200, [e.to_dict() for e in entries])
 
-        elif path.startswith("/v1/bundles/") and "/download" not in path:
-            bundle_id = path.split("/v1/bundles/")[1]
-            entry = self.server.store.get_entry(bundle_id)
-            if entry:
-                self._send_json(200, entry.to_dict())
-            else:
-                self._send_error_json(404, f"Bundle not found: {bundle_id}")
-
-        elif path.startswith("/v1/bundles/") and path.endswith("/download"):
+        elif path.startswith("/v1/bundles/") and "/download" in path:
             parts = path.split("/")
             bundle_id = parts[3] if len(parts) > 3 else ""
-            self._handle_download(bundle_id)
+            self._handle_download(bundle_id, device_id)
+
+        elif path.startswith("/v1/bundles/"):
+            bundle_id = path.split("/")[3] if len(path.split("/")) > 3 else ""
+            from waveos.registry.store import RegistryStore
+            store = RegistryStore(self.server.registry_root)
+            entry = store.get_entry(bundle_id)
+            if entry:
+                self._json_response(200, entry.to_dict())
+            else:
+                self.send_error(404, "Bundle not found")
 
         elif path == "/v1/health":
-            self._send_json(200, {"status": "ok", "timestamp": utc_now().isoformat()})
+            self._json_response(200, {"status": "ok", "timestamp": utc_now().isoformat()})
 
         else:
-            self._send_error_json(404, "Not found")
+            self.send_error(404, "Not found")
 
-    def _handle_download(self, bundle_id: str) -> None:
-        bundle_path = self.server.store.get_bundle(bundle_id)
+    def _handle_download(self, bundle_id: str, device_id: str) -> None:
+        from waveos.registry.store import RegistryStore
+        store = RegistryStore(self.server.registry_root)
+        bundle_path = store.get_bundle(bundle_id)
         if not bundle_path:
-            self._send_error_json(404, f"Bundle not found: {bundle_id}")
-            return
-        manifest_path = bundle_path / "bundle.json"
-        if not manifest_path.exists():
-            self._send_error_json(404, "Bundle manifest missing")
+            self.send_error(404, "Bundle not found")
             return
 
-        file_param = parse_qs(urlparse(self.path).query).get("file", [None])[0]
-        target = manifest_path
-        if file_param:
-            target = bundle_path / file_param
-            if not target.exists() or not str(target.resolve()).startswith(str(bundle_path.resolve())):
-                self._send_error_json(404, "File not found in bundle")
-                return
+        import tarfile
+        import io
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+            tar.add(str(bundle_path), arcname=bundle_id)
+        content = buf.getvalue()
+        total_size = len(content)
 
-        data = target.read_bytes()
-        total = len(data)
-        sha256 = hashlib.sha256(data).hexdigest()
+        content_hash = hashlib.sha256(content).hexdigest()
 
         range_header = self.headers.get("Range", "")
         if range_header.startswith("bytes="):
             try:
-                spec = range_header[6:]
-                start_str, end_str = spec.split("-", 1)
+                range_spec = range_header[6:]
+                start_str, end_str = range_spec.split("-", 1)
                 start = int(start_str) if start_str else 0
-                end = int(end_str) if end_str else total - 1
-                end = min(end, total - 1)
-                chunk = data[start:end + 1]
+                end = int(end_str) if end_str else total_size - 1
+                end = min(end, total_size - 1)
+                chunk = content[start:end + 1]
+                chunk_hash = hashlib.sha256(chunk).hexdigest()
                 self.send_response(206)
-                self.send_header("Content-Range", f"bytes {start}-{end}/{total}")
+                self.send_header("Content-Type", "application/gzip")
                 self.send_header("Content-Length", str(len(chunk)))
-                self.send_header("X-Content-SHA256", sha256)
+                self.send_header("Content-Range", f"bytes {start}-{end}/{total_size}")
                 self.send_header("Accept-Ranges", "bytes")
+                self.send_header("X-Content-SHA256", content_hash)
+                self.send_header("X-Chunk-SHA256", chunk_hash)
                 self.end_headers()
                 self.wfile.write(chunk)
                 return
@@ -206,128 +211,103 @@ class RegistryHandler(BaseHTTPRequestHandler):
                 pass
 
         self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
-        self.send_header("Content-Length", str(total))
-        self.send_header("X-Content-SHA256", sha256)
+        self.send_header("Content-Type", "application/gzip")
+        self.send_header("Content-Length", str(total_size))
         self.send_header("Accept-Ranges", "bytes")
+        self.send_header("X-Content-SHA256", content_hash)
         self.end_headers()
-        self.wfile.write(data)
+        self.wfile.write(content)
 
     def do_POST(self) -> None:
-        if not self._check_rate_limit():
-            self._send_error_json(429, "Rate limit exceeded")
+        device_id = self._get_device_id()
+        if not device_id:
+            self.send_error(401, "Unauthorized")
             return
-        identity = self._authenticate()
+        if not self._check_rate(device_id):
+            return
+
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/")
 
-        if path == "/v1/bundles":
-            params = parse_qs(parsed.query)
-            channel = params.get("channel", ["dev"])[0]
-            if channel in ("prod", "mission-critical") and self.server.config.require_ci_for_prod:
-                if not identity:
-                    self._send_error_json(403, "Authentication required for prod channel")
-                    return
-                if self.server.config.allowed_publishers and identity not in self.server.config.allowed_publishers:
-                    self._send_error_json(403, f"Publisher '{identity}' not authorized for {channel}")
-                    return
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length) if content_length > 0 else b""
-            try:
-                payload = json.loads(body) if body else {}
-            except json.JSONDecodeError:
-                self._send_error_json(400, "Invalid JSON")
-                return
-            bundle_dir_str = payload.get("bundle_dir", "")
-            if not bundle_dir_str:
-                self._send_error_json(400, "bundle_dir required")
-                return
-            bundle_dir = Path(bundle_dir_str)
-            if not bundle_dir.is_dir():
-                self._send_error_json(400, f"Not a directory: {bundle_dir}")
-                return
-            try:
-                entry = self.server.store.publish(bundle_dir, channel=channel, publisher=identity or "anonymous")
-                self._send_json(201, entry.to_dict())
-            except ValueError as exc:
-                self._send_error_json(400, str(exc))
-
-        elif path == "/v1/promote":
-            if not identity:
-                self._send_error_json(403, "Authentication required")
-                return
-            content_length = int(self.headers.get("Content-Length", 0))
-            body = self.rfile.read(content_length) if content_length > 0 else b""
-            try:
-                payload = json.loads(body) if body else {}
-            except json.JSONDecodeError:
-                self._send_error_json(400, "Invalid JSON")
-                return
-            bundle_id = payload.get("bundle_id", "")
-            target_channel = payload.get("target_channel", "")
-            if not bundle_id or not target_channel:
-                self._send_error_json(400, "bundle_id and target_channel required")
-                return
-            entry = self.server.store.get_entry(bundle_id)
-            if not entry:
-                self._send_error_json(404, f"Bundle not found: {bundle_id}")
-                return
-            bundle_path = self.server.store.get_bundle(bundle_id)
-            if not bundle_path:
-                self._send_error_json(404, "Bundle files not found")
-                return
-            new_entry = self.server.store.publish(bundle_path, channel=target_channel, publisher=identity)
-            promotion = {
-                "event": "promote",
-                "bundle_id": bundle_id,
-                "from_channel": entry.channel,
-                "to_channel": target_channel,
-                "promoted_by": identity,
-                "timestamp": utc_now().isoformat(),
-            }
-            self._log_audit(promotion)
-            self._send_json(200, {"promotion": promotion, "entry": new_entry.to_dict()})
-
+        if path == "/v1/bundles/publish":
+            self._handle_publish(device_id)
         else:
-            self._send_error_json(404, "Not found")
+            self.send_error(404, "Not found")
 
-    def _log_audit(self, event: Dict[str, Any]) -> None:
-        audit_path = self.server.config.registry_root / "audit.jsonl"
+    def _handle_publish(self, device_id: str) -> None:
+        content_length = int(self.headers.get("Content-Length", 0))
+        if content_length <= 0:
+            self.send_error(400, "Missing content")
+            return
+
+        channel = self.headers.get("X-Channel", "dev")
+        if not self.server.authenticator.can_publish(device_id, channel):
+            self.send_error(403, f"Device {device_id} cannot publish to channel {channel}")
+            return
+
+        body = self.rfile.read(content_length)
+        import tarfile
+        import io
+        import tempfile
         try:
-            with audit_path.open("a", encoding="utf-8") as f:
-                f.write(json.dumps(event, default=str) + "\n")
-        except OSError:
-            logger.warning("Failed to write audit log")
+            buf = io.BytesIO(body)
+            with tarfile.open(fileobj=buf, mode="r:gz") as tar:
+                tmpdir = Path(tempfile.mkdtemp(prefix="waveos_publish_"))
+                tar.extractall(tmpdir, filter="data")
+            subdirs = [d for d in tmpdir.iterdir() if d.is_dir()]
+            bundle_dir = subdirs[0] if subdirs else tmpdir
+            from waveos.registry.store import RegistryStore
+            store = RegistryStore(self.server.registry_root)
+            entry = store.publish(bundle_dir, channel=channel, publisher=device_id)
+            import shutil
+            shutil.rmtree(tmpdir, ignore_errors=True)
+            self._json_response(201, {"ok": True, "entry": entry.to_dict()})
+        except Exception as exc:
+            logger.warning("Publish failed: %s", exc)
+            self.send_error(500, f"Publish failed: {exc}")
 
 
 class RegistryHTTPServer(HTTPServer):
-    def __init__(self, config: RegistryServerConfig) -> None:
-        self.config = config
-        self.store = RegistryStore(config.registry_root)
-        self.rate_limiter = _RateLimiter(config.rate_limit_per_minute)
-        super().__init__((config.host, config.port), RegistryHandler)
+    def __init__(self, addr, handler, registry_root: Path, authenticator: DeviceAuthenticator, rate_limiter: RateLimiter):
+        super().__init__(addr, handler)
+        self.registry_root = registry_root
+        self.authenticator = authenticator
+        self.rate_limiter = rate_limiter
 
-    def setup_tls(self) -> None:
-        if not self.config.tls_cert or not self.config.tls_key:
-            return
+
+def run_registry_server(
+    host: str = "0.0.0.0",
+    port: int = 9200,
+    registry_root: Path = Path("out/registry"),
+    tls_cert: Optional[str] = None,
+    tls_key: Optional[str] = None,
+    tls_ca: Optional[str] = None,
+    allowed_devices_path: Optional[Path] = None,
+    rate: float = 10.0,
+    burst: int = 50,
+) -> None:
+    """Start the registry HTTP server with optional mTLS."""
+    tls_cert = tls_cert or os.getenv("WAVEOS_REGISTRY_TLS_CERT", "")
+    tls_key = tls_key or os.getenv("WAVEOS_REGISTRY_TLS_KEY", "")
+    tls_ca = tls_ca or os.getenv("WAVEOS_REGISTRY_TLS_CA", "")
+
+    auth = DeviceAuthenticator(allowed_devices_path=allowed_devices_path)
+    limiter = RateLimiter(rate=rate, burst=burst)
+    server = RegistryHTTPServer((host, port), RegistryRequestHandler, registry_root, auth, limiter)
+
+    if tls_cert and tls_key:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-        ctx.load_cert_chain(self.config.tls_cert, self.config.tls_key)
-        if self.config.tls_ca:
-            ctx.load_verify_locations(self.config.tls_ca)
-        if self.config.require_client_cert:
+        ctx.load_cert_chain(tls_cert, tls_key)
+        if tls_ca:
+            ctx.load_verify_locations(tls_ca)
             ctx.verify_mode = ssl.CERT_REQUIRED
         else:
             ctx.verify_mode = ssl.CERT_OPTIONAL
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        self.socket = ctx.wrap_socket(self.socket, server_side=True)
-        logger.info("TLS enabled (client_cert=%s)", "required" if self.config.require_client_cert else "optional")
+        server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        logger.info("Registry server starting with TLS on %s:%d", host, port)
+    else:
+        logger.info("Registry server starting (no TLS) on %s:%d", host, port)
 
-
-def run_registry_server(config: Optional[RegistryServerConfig] = None) -> None:
-    cfg = config or RegistryServerConfig.from_env()
-    server = RegistryHTTPServer(cfg)
-    server.setup_tls()
-    logger.info("Registry server listening on %s:%d", cfg.host, cfg.port)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
