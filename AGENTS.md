@@ -48,7 +48,7 @@ The secure release platform adds these subsystems (all self-contained, no new de
 | SBOM | `src/waveos/sbom.py` | CycloneDX generation + blocklist/allowlist verification |
 | Agent | `src/waveos/agent/` | State machine, side-by-side install, activate, rollback, evidence packs |
 | Compat | `src/waveos/compat/` | Preflight checks (OS/arch/libs/disk) + runtime strategies |
-| Registry | `src/waveos/registry/` | File-system bundle registry (publish, list, get, channels) |
+| Registry | `src/waveos/registry/` | File-system bundle registry + networked transport (mTLS server, client, mirror sync, device auth) |
 | Bridge | `src/waveos/bridge/` | Legacy bridge orchestrator (mirror/canary/cutover) |
 | Rollout | `src/waveos/rollout_controls.py` | Channel policies, health gates, auto-rollback triggers |
 | Transfer | `src/waveos/transfer/` | Gateway adaptors, data diode sync, hash-chained audit trail |
