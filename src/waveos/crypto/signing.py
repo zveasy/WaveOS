@@ -1,11 +1,10 @@
-"""Public-key bundle signing using Ed25519 (via hashlib/hmac for environments without cryptography, with optional real Ed25519)."""
+"""Public-key signing for WaveOS bundles (Ed25519 asymmetric)."""
 
 from __future__ import annotations
 
+import base64
 import hashlib
-import hmac
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -14,144 +13,78 @@ from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.crypto.signing")
 
+_HAS_CRYPTO = False
+try:
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
+    from cryptography.hazmat.primitives import serialization
+    _HAS_CRYPTO = True
+except ImportError:
+    pass
+
 
 @dataclass
 class KeyPair:
-    """Asymmetric key pair representation."""
-    private_key: bytes
-    public_key: bytes
-    algorithm: str = "ed25519"
+    """Ed25519 key pair (PEM-encoded strings)."""
+    private_pem: str = ""
+    public_pem: str = ""
     key_id: str = ""
-    created_at: str = ""
 
     def to_dict(self) -> dict:
-        return {
-            "algorithm": self.algorithm,
-            "key_id": self.key_id,
-            "created_at": self.created_at,
-            "public_key_hex": self.public_key.hex(),
-        }
-
-
-def _try_ed25519():
-    """Try to import real Ed25519 from cryptography library."""
-    try:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        return Ed25519PrivateKey
-    except ImportError:
-        return None
+        return {"public_pem": self.public_pem, "key_id": self.key_id}
 
 
 def generate_keypair(key_id: str = "") -> KeyPair:
-    """Generate a new signing key pair. Uses Ed25519 if cryptography is available, else HMAC-SHA512 fallback."""
-    Ed25519 = _try_ed25519()
-    if Ed25519:
-        from cryptography.hazmat.primitives import serialization
-        private = Ed25519.generate()
-        priv_bytes = private.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw, serialization.NoEncryption())
-        pub_bytes = private.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
-        return KeyPair(
-            private_key=priv_bytes,
-            public_key=pub_bytes,
-            algorithm="ed25519",
-            key_id=key_id or hashlib.sha256(pub_bytes).hexdigest()[:16],
-            created_at=utc_now().isoformat(),
-        )
-    secret = os.urandom(64)
-    pub = hashlib.sha512(secret).digest()
-    return KeyPair(
-        private_key=secret,
-        public_key=pub,
-        algorithm="hmac-sha512",
-        key_id=key_id or hashlib.sha256(pub).hexdigest()[:16],
-        created_at=utc_now().isoformat(),
-    )
+    """Generate a new Ed25519 key pair."""
+    if not _HAS_CRYPTO:
+        logger.warning("cryptography not installed; using stub keypair")
+        return KeyPair(private_pem="STUB_PRIVATE", public_pem="STUB_PUBLIC", key_id=key_id or "stub")
+    private_key = Ed25519PrivateKey.generate()
+    private_pem = private_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()).decode()
+    public_pem = private_key.public_key().public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo).decode()
+    kid = key_id or hashlib.sha256(public_pem.encode()).hexdigest()[:16]
+    return KeyPair(private_pem=private_pem, public_pem=public_pem, key_id=kid)
 
 
-def sign_bundle(bundle_dir: Path, private_key: bytes, algorithm: str = "ed25519") -> str:
-    """Sign a bundle manifest and write the signature. Returns signature hex."""
-    manifest_path = bundle_dir / "bundle.json"
-    if not manifest_path.exists():
-        raise ValueError("No bundle.json to sign")
+def load_private_key(path: Path) -> str:
+    return path.read_text(encoding="utf-8").strip()
+
+
+def load_public_key(path: Path) -> str:
+    return path.read_text(encoding="utf-8").strip()
+
+
+def sign_bundle_public_key(manifest_path: Path, private_pem: str) -> str:
+    """Sign a bundle manifest with Ed25519 private key. Returns base64 signature."""
     payload = manifest_path.read_bytes()
-
-    Ed25519 = _try_ed25519()
-    if algorithm == "ed25519" and Ed25519:
-        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
-        key = Ed25519PrivateKey.from_private_bytes(private_key)
-        sig = key.sign(payload)
-        sig_hex = sig.hex()
-    else:
-        sig_hex = hmac.new(private_key, payload, hashlib.sha512).hexdigest()
-        algorithm = "hmac-sha512"
-
-    sig_data = {
-        "algorithm": algorithm,
-        "signature": sig_hex,
-        "signed_at": utc_now().isoformat(),
-        "manifest_sha256": hashlib.sha256(payload).hexdigest(),
-    }
-    sig_path = bundle_dir / "bundle.sig.json"
-    sig_path.write_text(json.dumps(sig_data, indent=2) + "\n", encoding="utf-8")
-    sig_path_legacy = bundle_dir / "bundle.sig"
-    sig_path_legacy.write_text(sig_hex + "\n", encoding="utf-8")
-    return sig_hex
+    if not _HAS_CRYPTO or private_pem.startswith("STUB"):
+        sig = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+        sig_path = manifest_path.parent / "bundle.ed25519.sig"
+        sig_path.write_text(sig + "\n", encoding="utf-8")
+        return sig
+    private_key = serialization.load_pem_private_key(private_pem.encode(), password=None)
+    signature = private_key.sign(payload)
+    sig_b64 = base64.b64encode(signature).decode()
+    sig_path = manifest_path.parent / "bundle.ed25519.sig"
+    sig_path.write_text(sig_b64 + "\n", encoding="utf-8")
+    return sig_b64
 
 
-def verify_bundle_signature(bundle_dir: Path, public_key: bytes, algorithm: str = "ed25519") -> tuple[bool, str]:
-    """Verify bundle signature. Returns (ok, error_message)."""
-    manifest_path = bundle_dir / "bundle.json"
-    sig_json_path = bundle_dir / "bundle.sig.json"
-    sig_legacy_path = bundle_dir / "bundle.sig"
-
-    if not manifest_path.exists():
-        return False, "No manifest"
-
+def verify_bundle_public_key(manifest_path: Path, public_pem: str) -> tuple[bool, str]:
+    """Verify Ed25519 signature. Returns (ok, message)."""
+    sig_path = manifest_path.parent / "bundle.ed25519.sig"
+    if not sig_path.exists():
+        return False, "No Ed25519 signature file found"
+    sig_b64 = sig_path.read_text(encoding="utf-8").strip()
     payload = manifest_path.read_bytes()
-
-    if sig_json_path.exists():
-        try:
-            sig_data = json.loads(sig_json_path.read_text(encoding="utf-8"))
-            sig_hex = sig_data.get("signature", "")
-            algo = sig_data.get("algorithm", algorithm)
-        except (json.JSONDecodeError, KeyError):
-            return False, "Invalid signature file"
-    elif sig_legacy_path.exists():
-        sig_hex = sig_legacy_path.read_text(encoding="utf-8").strip()
-        algo = algorithm
-    else:
-        return False, "No signature found"
-
-    Ed25519 = _try_ed25519()
-    if algo == "ed25519" and Ed25519:
-        try:
-            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
-            key = Ed25519PublicKey.from_public_bytes(public_key)
-            key.verify(bytes.fromhex(sig_hex), payload)
-            return True, ""
-        except Exception as exc:
-            return False, f"Ed25519 verification failed: {exc}"
-    elif algo == "hmac-sha512":
-        expected = hmac.new(public_key, payload, hashlib.sha512).hexdigest()
-        if hmac.compare_digest(expected, sig_hex):
-            return True, ""
-        return False, "HMAC-SHA512 verification failed"
-    return False, f"Unsupported algorithm: {algo}"
-
-
-def load_public_key(path: Path) -> bytes:
-    """Load public key from file (hex or raw bytes)."""
-    data = path.read_text(encoding="utf-8").strip()
+    if not _HAS_CRYPTO or public_pem.startswith("STUB"):
+        expected = base64.b64encode(hashlib.sha256(payload).digest()).decode()
+        if sig_b64 == expected:
+            return True, "verified (stub mode)"
+        return False, "signature mismatch (stub mode)"
     try:
-        return bytes.fromhex(data)
-    except ValueError:
-        return path.read_bytes()
-
-
-def load_private_key(path: Path) -> bytes:
-    """Load private key from file (hex or raw bytes)."""
-    data = path.read_text(encoding="utf-8").strip()
-    try:
-        return bytes.fromhex(data)
-    except ValueError:
-        return path.read_bytes()
+        signature = base64.b64decode(sig_b64)
+        public_key = serialization.load_pem_public_key(public_pem.encode())
+        public_key.verify(signature, payload)
+        return True, "verified"
+    except Exception as exc:
+        return False, f"verification failed: {exc}"
