@@ -1,4 +1,4 @@
-"""Public-key bundle signing — Ed25519 with fallback to HMAC-SHA512 for environments without cryptography."""
+"""Public-key signing for release bundles (Ed25519 via hashlib/hmac fallback, or real Ed25519 when available)."""
 
 from __future__ import annotations
 
@@ -8,134 +8,153 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional
 
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.crypto.signing")
 
-_HAS_CRYPTOGRAPHY = False
-try:
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
-    from cryptography.hazmat.primitives import serialization
-    _HAS_CRYPTOGRAPHY = True
-except ImportError:
-    pass
-
 
 @dataclass
 class KeyPair:
-    """Asymmetric key pair (Ed25519 preferred, HMAC-SHA512 fallback)."""
-    private_key_pem: str = ""
-    public_key_pem: str = ""
-    algorithm: str = "ed25519"
-    key_id: str = ""
+    """Asymmetric key pair (or HMAC shared secret as fallback)."""
+    key_id: str
+    algorithm: str = "hmac-sha256"
+    private_key: str = ""
+    public_key: str = ""
     created_at: str = ""
+    expires_at: str = ""
 
-    def to_dict(self) -> dict:
-        return {
-            "public_key_pem": self.public_key_pem,
-            "algorithm": self.algorithm,
-            "key_id": self.key_id,
-            "created_at": self.created_at,
-        }
+    def to_dict(self, include_private: bool = False) -> dict:
+        d: Dict[str, Any] = {"key_id": self.key_id, "algorithm": self.algorithm,
+                              "public_key": self.public_key, "created_at": self.created_at,
+                              "expires_at": self.expires_at}
+        if include_private:
+            d["private_key"] = self.private_key
+        return d
 
-
-def generate_keypair(key_id: str = "") -> KeyPair:
-    """Generate a new Ed25519 keypair (or HMAC fallback key)."""
-    if _HAS_CRYPTOGRAPHY:
-        private_key = Ed25519PrivateKey.generate()
-        private_pem = private_key.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        ).decode("utf-8")
-        public_pem = private_key.public_key().public_bytes(
-            serialization.Encoding.PEM,
-            serialization.PublicFormat.SubjectPublicKeyInfo,
-        ).decode("utf-8")
-        return KeyPair(
-            private_key_pem=private_pem,
-            public_key_pem=public_pem,
-            algorithm="ed25519",
-            key_id=key_id or f"key-{os.urandom(8).hex()}",
-            created_at=utc_now().isoformat(),
-        )
-    secret = os.urandom(64).hex()
-    return KeyPair(
-        private_key_pem=secret,
-        public_key_pem=secret,
-        algorithm="hmac-sha512",
-        key_id=key_id or f"hmac-{os.urandom(8).hex()}",
-        created_at=utc_now().isoformat(),
-    )
+    @classmethod
+    def from_dict(cls, d: dict) -> KeyPair:
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
 
-def sign_bundle_pubkey(manifest_path: Path, private_key_pem: str, algorithm: str = "ed25519") -> str:
-    """Sign bundle manifest with private key. Returns hex signature."""
-    payload = manifest_path.read_bytes()
-    if algorithm == "ed25519" and _HAS_CRYPTOGRAPHY:
-        private_key = serialization.load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
-        signature = private_key.sign(payload)
-        sig_hex = signature.hex()
-    else:
-        sig_hex = hmac.new(private_key_pem.encode("utf-8"), payload, hashlib.sha512).hexdigest()
-    sig_path = manifest_path.parent / "bundle.sig.v2"
-    sig_data = {
-        "signature": sig_hex,
-        "algorithm": algorithm if (algorithm == "ed25519" and _HAS_CRYPTOGRAPHY) else "hmac-sha512",
-        "signed_at": utc_now().isoformat(),
-        "manifest_sha256": hashlib.sha256(payload).hexdigest(),
-    }
-    sig_path.write_text(json.dumps(sig_data, indent=2) + "\n", encoding="utf-8")
-    return sig_hex
-
-
-def verify_bundle_pubkey(manifest_path: Path, public_key_pem: str, algorithm: str = "ed25519") -> Tuple[bool, str]:
-    """Verify bundle signature. Returns (ok, error_message)."""
-    sig_path = manifest_path.parent / "bundle.sig.v2"
-    if not sig_path.exists():
-        sig_path = manifest_path.parent / "bundle.sig"
-        if not sig_path.exists():
-            return False, "No signature file found"
-        sig_hex = sig_path.read_text(encoding="utf-8").strip()
-        payload = manifest_path.read_bytes()
-        expected = hmac.new(public_key_pem.encode("utf-8"), payload, hashlib.sha256).hexdigest()
-        if hmac.compare_digest(sig_hex, expected):
-            return True, ""
-        return False, "HMAC-SHA256 (v1) signature mismatch"
-
+def generate_keypair(key_id: str = "", algorithm: str = "hmac-sha256") -> KeyPair:
+    """Generate a new key pair. Uses Ed25519 if cryptography is available, otherwise HMAC-SHA256."""
+    if not key_id:
+        key_id = f"key-{os.urandom(8).hex()}"
     try:
-        sig_data = json.loads(sig_path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
-        return False, f"Cannot read signature: {exc}"
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+        from cryptography.hazmat.primitives.serialization import Encoding, NoEncryption, PrivateFormat, PublicFormat
+        private_key = Ed25519PrivateKey.generate()
+        private_bytes = private_key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
+        public_bytes = private_key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
+        return KeyPair(key_id=key_id, algorithm="ed25519", private_key=private_bytes,
+                       public_key=public_bytes, created_at=utc_now().isoformat())
+    except ImportError:
+        secret = os.urandom(32).hex()
+        return KeyPair(key_id=key_id, algorithm="hmac-sha256", private_key=secret,
+                       public_key=secret, created_at=utc_now().isoformat())
 
-    sig_hex = sig_data.get("signature", "")
-    sig_alg = sig_data.get("algorithm", "")
-    payload = manifest_path.read_bytes()
-    manifest_hash = hashlib.sha256(payload).hexdigest()
-    if sig_data.get("manifest_sha256") and sig_data["manifest_sha256"] != manifest_hash:
-        return False, "Manifest hash mismatch (tampered after signing)"
 
-    if sig_alg == "ed25519" and _HAS_CRYPTOGRAPHY:
+def _compute_bundle_digest(bundle_dir: Path) -> str:
+    """Compute canonical digest of bundle contents (excluding signature files)."""
+    manifest_path = bundle_dir / "bundle.json"
+    if not manifest_path.exists():
+        return ""
+    h = hashlib.sha256()
+    h.update(manifest_path.read_bytes())
+    return h.hexdigest()
+
+
+def sign_bundle(bundle_dir: Path, key: KeyPair) -> Dict[str, Any]:
+    """Sign a bundle manifest and write signature file. Returns signature record."""
+    digest = _compute_bundle_digest(bundle_dir)
+    if not digest:
+        raise ValueError("No bundle.json found")
+    manifest_bytes = (bundle_dir / "bundle.json").read_bytes()
+    if key.algorithm == "ed25519":
         try:
-            public_key = serialization.load_pem_public_key(public_key_pem.encode("utf-8"))
-            public_key.verify(bytes.fromhex(sig_hex), payload)
-            return True, ""
-        except Exception as exc:
-            return False, f"Ed25519 verification failed: {exc}"
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+            from cryptography.hazmat.primitives.serialization import load_pem_private_key
+            private_key = load_pem_private_key(key.private_key.encode(), password=None)
+            sig_bytes = private_key.sign(manifest_bytes)
+            signature = sig_bytes.hex()
+        except (ImportError, Exception) as exc:
+            logger.warning("Ed25519 signing failed, falling back to HMAC: %s", exc)
+            signature = hmac.new(key.private_key.encode(), manifest_bytes, hashlib.sha256).hexdigest()
+            key = KeyPair(key_id=key.key_id, algorithm="hmac-sha256", private_key=key.private_key,
+                          public_key=key.public_key)
     else:
-        expected = hmac.new(public_key_pem.encode("utf-8"), payload, hashlib.sha512).hexdigest()
-        if hmac.compare_digest(sig_hex, expected):
+        signature = hmac.new(key.private_key.encode(), manifest_bytes, hashlib.sha256).hexdigest()
+    sig_record = {
+        "signature": signature, "algorithm": key.algorithm, "key_id": key.key_id,
+        "digest": digest, "signed_at": utc_now().isoformat(),
+    }
+    sig_path = bundle_dir / "bundle.sig.json"
+    sig_path.write_text(json.dumps(sig_record, indent=2) + "\n", encoding="utf-8")
+    old_sig = bundle_dir / "bundle.sig"
+    old_sig.write_text(signature + "\n", encoding="utf-8")
+    return sig_record
+
+
+def verify_bundle_signature(bundle_dir: Path, public_key: str = "", key: Optional[KeyPair] = None) -> tuple[bool, str]:
+    """Verify bundle signature. Returns (ok, error_message)."""
+    sig_json_path = bundle_dir / "bundle.sig.json"
+    sig_path = bundle_dir / "bundle.sig"
+    manifest_path = bundle_dir / "bundle.json"
+    if not manifest_path.exists():
+        return False, "No bundle.json"
+    manifest_bytes = manifest_path.read_bytes()
+    if sig_json_path.exists():
+        try:
+            sig_record = json.loads(sig_json_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False, "Cannot read signature record"
+        algorithm = sig_record.get("algorithm", "hmac-sha256")
+        signature = sig_record.get("signature", "")
+        if algorithm == "ed25519":
+            pk = public_key or (key.public_key if key else "")
+            if not pk:
+                return False, "No public key for Ed25519 verification"
+            try:
+                from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+                from cryptography.hazmat.primitives.serialization import load_pem_public_key
+                pub_key = load_pem_public_key(pk.encode())
+                pub_key.verify(bytes.fromhex(signature), manifest_bytes)
+                return True, ""
+            except ImportError:
+                return False, "cryptography library not available for Ed25519"
+            except Exception as exc:
+                return False, f"Ed25519 verification failed: {exc}"
+        else:
+            pk = public_key or (key.public_key if key else "") or (key.private_key if key else "")
+            if not pk:
+                return False, "No key for HMAC verification"
+            expected = hmac.new(pk.encode(), manifest_bytes, hashlib.sha256).hexdigest()
+            if hmac.compare_digest(expected, signature):
+                return True, ""
+            return False, "HMAC signature mismatch"
+    elif sig_path.exists():
+        signature = sig_path.read_text(encoding="utf-8").strip()
+        pk = public_key or (key.public_key if key else "") or (key.private_key if key else "")
+        if not pk:
+            return False, "No key"
+        expected = hmac.new(pk.encode(), manifest_bytes, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(expected, signature):
             return True, ""
-        return False, "HMAC-SHA512 signature mismatch"
+        return False, "HMAC signature mismatch"
+    return False, "No signature file found"
 
 
-def load_public_key(path: Path) -> str:
-    """Load public key from file."""
-    return path.read_text(encoding="utf-8").strip()
+def save_keypair(key: KeyPair, path: Path, include_private: bool = True) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(key.to_dict(include_private=include_private), indent=2) + "\n", encoding="utf-8")
 
 
-def load_private_key(path: Path) -> str:
-    """Load private key from file."""
-    return path.read_text(encoding="utf-8").strip()
+def load_keypair(path: Path) -> Optional[KeyPair]:
+    if not path.exists():
+        return None
+    try:
+        return KeyPair.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    except (json.JSONDecodeError, OSError):
+        return None

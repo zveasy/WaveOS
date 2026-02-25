@@ -1,4 +1,4 @@
-"""Anti-rollback protection — monotonic version counters and release epochs."""
+"""Anti-rollback controls — monotonic version counters, release epochs, version policy enforcement."""
 
 from __future__ import annotations
 
@@ -13,87 +13,87 @@ logger = get_logger("waveos.crypto.anti_rollback")
 
 
 @dataclass
-class ReleaseEpoch:
-    """Monotonic release epoch for anti-rollback protection."""
-    epoch: int
-    bundle_id: str
-    version: str
-    timestamp: str = ""
-    channel: str = ""
-    approved_downgrade: bool = False
+class VersionEpoch:
+    """Monotonic version epoch — tracks the minimum acceptable version per app/channel."""
+    app_name: str
+    channel: str = "prod"
+    epoch: int = 0
+    min_version: str = ""
+    updated_at: str = ""
+    updated_by: str = ""
+    reason: str = ""
 
     def to_dict(self) -> dict:
-        return {
-            "epoch": self.epoch, "bundle_id": self.bundle_id, "version": self.version,
-            "timestamp": self.timestamp or utc_now().isoformat(), "channel": self.channel,
-            "approved_downgrade": self.approved_downgrade,
-        }
+        return {"app_name": self.app_name, "channel": self.channel, "epoch": self.epoch,
+                "min_version": self.min_version, "updated_at": self.updated_at,
+                "updated_by": self.updated_by, "reason": self.reason}
 
     @classmethod
-    def from_dict(cls, d: dict) -> ReleaseEpoch:
+    def from_dict(cls, d: dict) -> VersionEpoch:
         return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
 
-def _epoch_store_path(base_dir: Path) -> Path:
-    return base_dir / "release_epochs.json"
+def _parse_version(v: str) -> Tuple[int, ...]:
+    """Parse version string into tuple for comparison. Handles semver, epoch-prefixed, etc."""
+    v = v.strip().lstrip("v").split("-")[0].split("+")[0]
+    parts = []
+    for p in v.split("."):
+        try:
+            parts.append(int(p))
+        except ValueError:
+            parts.append(0)
+    return tuple(parts) if parts else (0,)
 
 
-def get_current_epoch(base_dir: Path) -> int:
-    """Get the current (highest) release epoch."""
-    path = _epoch_store_path(base_dir)
-    if not path.exists():
-        return 0
-    try:
-        epochs = json.loads(path.read_text(encoding="utf-8"))
-        if not epochs:
-            return 0
-        return max(e.get("epoch", 0) for e in epochs)
-    except (json.JSONDecodeError, KeyError):
-        return 0
+def check_anti_rollback(bundle_version: str, epoch: VersionEpoch,
+                        allow_override: bool = False) -> Tuple[bool, str]:
+    """Check if a bundle version is allowed (not a rollback below the epoch minimum).
 
-
-def get_epoch_history(base_dir: Path) -> List[ReleaseEpoch]:
-    """Get full epoch history."""
-    path = _epoch_store_path(base_dir)
-    if not path.exists():
-        return []
-    try:
-        return [ReleaseEpoch.from_dict(e) for e in json.loads(path.read_text(encoding="utf-8"))]
-    except (json.JSONDecodeError, KeyError):
-        return []
-
-
-def record_epoch(base_dir: Path, bundle_id: str, version: str, channel: str = "") -> ReleaseEpoch:
-    """Record a new release epoch (monotonically increasing)."""
-    base_dir.mkdir(parents=True, exist_ok=True)
-    current = get_current_epoch(base_dir)
-    new_epoch = current + 1
-    entry = ReleaseEpoch(
-        epoch=new_epoch, bundle_id=bundle_id, version=version,
-        timestamp=utc_now().isoformat(), channel=channel,
-    )
-    history = get_epoch_history(base_dir)
-    history.append(entry)
-    _epoch_store_path(base_dir).write_text(
-        json.dumps([e.to_dict() for e in history], indent=2) + "\n", encoding="utf-8",
-    )
-    logger.info("Recorded epoch %d for %s v%s", new_epoch, bundle_id, version)
-    return entry
-
-
-def check_anti_rollback(
-    base_dir: Path,
-    target_epoch: int,
-    allow_approved_downgrade: bool = False,
-) -> Tuple[bool, str]:
-    """Check if installing a bundle at target_epoch is allowed.
     Returns (allowed, reason).
     """
-    current = get_current_epoch(base_dir)
-    if target_epoch >= current:
+    if not epoch.min_version:
         return True, ""
-    if target_epoch == 0 and current == 0:
-        return True, ""
-    if allow_approved_downgrade:
-        return True, f"Approved downgrade from epoch {current} to {target_epoch}"
-    return False, f"Anti-rollback: target epoch {target_epoch} < current {current}. Set allow_approved_downgrade=True to override."
+    bundle_v = _parse_version(bundle_version)
+    min_v = _parse_version(epoch.min_version)
+    if bundle_v < min_v:
+        if allow_override:
+            return True, f"Rollback override: {bundle_version} < {epoch.min_version} (epoch {epoch.epoch})"
+        return False, f"Anti-rollback: {bundle_version} < minimum {epoch.min_version} (epoch {epoch.epoch})"
+    return True, ""
+
+
+def record_version_epoch(epochs_path: Path, app_name: str, channel: str, version: str,
+                         updater: str = "", reason: str = "") -> VersionEpoch:
+    """Record a new version epoch (advance the minimum version)."""
+    epochs_path.parent.mkdir(parents=True, exist_ok=True)
+    epochs: List[VersionEpoch] = []
+    if epochs_path.exists():
+        try:
+            data = json.loads(epochs_path.read_text(encoding="utf-8"))
+            epochs = [VersionEpoch.from_dict(e) for e in data]
+        except (json.JSONDecodeError, OSError):
+            pass
+    current = next((e for e in epochs if e.app_name == app_name and e.channel == channel), None)
+    new_epoch_num = (current.epoch + 1) if current else 1
+    new_epoch = VersionEpoch(app_name=app_name, channel=channel, epoch=new_epoch_num,
+                             min_version=version, updated_at=utc_now().isoformat(),
+                             updated_by=updater, reason=reason or f"Version advanced to {version}")
+    epochs = [e for e in epochs if not (e.app_name == app_name and e.channel == channel)]
+    epochs.append(new_epoch)
+    epochs_path.write_text(json.dumps([e.to_dict() for e in epochs], indent=2) + "\n", encoding="utf-8")
+    return new_epoch
+
+
+def load_version_epoch(epochs_path: Path, app_name: str, channel: str) -> Optional[VersionEpoch]:
+    """Load the current version epoch for an app/channel."""
+    if not epochs_path.exists():
+        return None
+    try:
+        data = json.loads(epochs_path.read_text(encoding="utf-8"))
+        for e in data:
+            ve = VersionEpoch.from_dict(e)
+            if ve.app_name == app_name and ve.channel == channel:
+                return ve
+    except (json.JSONDecodeError, OSError):
+        pass
+    return None

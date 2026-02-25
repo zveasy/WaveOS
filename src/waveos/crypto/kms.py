@@ -1,112 +1,115 @@
-"""KMS provider interface — optional integration with HSM/KMS for key management."""
+"""KMS (Key Management Service) provider interface — local, HSM, AWS KMS, Vault integration points."""
 
 from __future__ import annotations
 
 import json
 import os
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from waveos.crypto.signing import KeyPair, generate_keypair, load_keypair, save_keypair
 from waveos.utils import get_logger, utc_now
 
 logger = get_logger("waveos.crypto.kms")
 
 
-@dataclass
-class KeyMetadata:
-    key_id: str
-    algorithm: str = "ed25519"
-    created_at: str = ""
-    rotated_at: str = ""
-    revoked: bool = False
-    revoked_at: str = ""
-    purpose: str = "signing"
+class KMSProvider(ABC):
+    """Abstract KMS provider interface."""
 
-    def to_dict(self) -> dict:
-        return {
-            "key_id": self.key_id, "algorithm": self.algorithm,
-            "created_at": self.created_at, "rotated_at": self.rotated_at,
-            "revoked": self.revoked, "revoked_at": self.revoked_at,
-            "purpose": self.purpose,
-        }
+    @abstractmethod
+    def get_signing_key(self, key_id: str) -> Optional[KeyPair]:
+        ...
 
-    @classmethod
-    def from_dict(cls, d: dict) -> KeyMetadata:
-        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
+    @abstractmethod
+    def get_verification_key(self, key_id: str) -> Optional[KeyPair]:
+        ...
+
+    @abstractmethod
+    def list_keys(self) -> List[str]:
+        ...
+
+    @abstractmethod
+    def create_key(self, key_id: str = "", algorithm: str = "hmac-sha256") -> KeyPair:
+        ...
+
+    @abstractmethod
+    def rotate_key(self, key_id: str) -> Optional[KeyPair]:
+        ...
+
+    @abstractmethod
+    def revoke_key(self, key_id: str) -> bool:
+        ...
 
 
-class KMSProvider:
-    """Key management provider (file-based default; can be extended for HSM/Vault/AWS KMS)."""
+class LocalKMS(KMSProvider):
+    """File-system-based KMS for development and air-gapped environments."""
 
-    def __init__(self, store_path: Path = Path("out/kms")) -> None:
-        self.store_path = store_path
-        self.store_path.mkdir(parents=True, exist_ok=True)
-        self._index_path = self.store_path / "keys.json"
+    def __init__(self, keys_dir: Path) -> None:
+        self.keys_dir = keys_dir
+        self.keys_dir.mkdir(parents=True, exist_ok=True)
+        self._revoked: set = set()
+        self._load_revoked()
 
-    def _load_index(self) -> List[KeyMetadata]:
-        if not self._index_path.exists():
-            return []
-        try:
-            return [KeyMetadata.from_dict(k) for k in json.loads(self._index_path.read_text(encoding="utf-8"))]
-        except (json.JSONDecodeError, KeyError):
-            return []
+    def _load_revoked(self) -> None:
+        revoked_path = self.keys_dir / "revoked.json"
+        if revoked_path.exists():
+            try:
+                self._revoked = set(json.loads(revoked_path.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, OSError):
+                pass
 
-    def _save_index(self, keys: List[KeyMetadata]) -> None:
-        self._index_path.write_text(json.dumps([k.to_dict() for k in keys], indent=2) + "\n", encoding="utf-8")
+    def _save_revoked(self) -> None:
+        path = self.keys_dir / "revoked.json"
+        path.write_text(json.dumps(sorted(self._revoked), indent=2) + "\n", encoding="utf-8")
 
-    def create_key(self, key_id: str = "", purpose: str = "signing") -> KeyMetadata:
-        from waveos.crypto.signing import generate_keypair
-        kp = generate_keypair(key_id=key_id)
-        (self.store_path / f"{kp.key_id}.private.pem").write_text(kp.private_key_pem, encoding="utf-8")
-        (self.store_path / f"{kp.key_id}.public.pem").write_text(kp.public_key_pem, encoding="utf-8")
-        meta = KeyMetadata(key_id=kp.key_id, algorithm=kp.algorithm, created_at=utc_now().isoformat(), purpose=purpose)
-        keys = self._load_index()
-        keys.append(meta)
-        self._save_index(keys)
-        logger.info("Created key %s (%s)", kp.key_id, kp.algorithm)
-        return meta
+    def get_signing_key(self, key_id: str) -> Optional[KeyPair]:
+        if key_id in self._revoked:
+            return None
+        return load_keypair(self.keys_dir / f"{key_id}.json")
 
-    def get_key(self, key_id: str) -> Optional[KeyMetadata]:
-        for k in self._load_index():
-            if k.key_id == key_id:
-                return k
-        return None
+    def get_verification_key(self, key_id: str) -> Optional[KeyPair]:
+        key = load_keypair(self.keys_dir / f"{key_id}.json")
+        if key:
+            return KeyPair(key_id=key.key_id, algorithm=key.algorithm, public_key=key.public_key,
+                           created_at=key.created_at, expires_at=key.expires_at)
+        pub_path = self.keys_dir / f"{key_id}.pub.json"
+        return load_keypair(pub_path)
 
-    def list_keys(self, include_revoked: bool = False) -> List[KeyMetadata]:
-        keys = self._load_index()
-        if not include_revoked:
-            keys = [k for k in keys if not k.revoked]
+    def list_keys(self) -> List[str]:
+        keys = []
+        for p in sorted(self.keys_dir.glob("*.json")):
+            if p.stem not in ("revoked",) and not p.stem.endswith(".pub"):
+                keys.append(p.stem)
         return keys
 
+    def create_key(self, key_id: str = "", algorithm: str = "hmac-sha256") -> KeyPair:
+        key = generate_keypair(key_id=key_id, algorithm=algorithm)
+        save_keypair(key, self.keys_dir / f"{key.key_id}.json", include_private=True)
+        pub_key = KeyPair(key_id=key.key_id, algorithm=key.algorithm, public_key=key.public_key,
+                          created_at=key.created_at)
+        save_keypair(pub_key, self.keys_dir / f"{key.key_id}.pub.json", include_private=False)
+        return key
+
+    def rotate_key(self, key_id: str) -> Optional[KeyPair]:
+        old_key = self.get_signing_key(key_id)
+        if not old_key:
+            return None
+        self.revoke_key(key_id)
+        new_id = f"{key_id}-r{utc_now().strftime('%Y%m%d%H%M%S')}"
+        return self.create_key(key_id=new_id, algorithm=old_key.algorithm)
+
     def revoke_key(self, key_id: str) -> bool:
-        keys = self._load_index()
-        for k in keys:
-            if k.key_id == key_id:
-                k.revoked = True
-                k.revoked_at = utc_now().isoformat()
-                self._save_index(keys)
-                logger.info("Revoked key %s", key_id)
-                return True
-        return False
-
-    def rotate_key(self, old_key_id: str, purpose: str = "signing") -> Optional[KeyMetadata]:
-        self.revoke_key(old_key_id)
-        return self.create_key(purpose=purpose)
-
-    def get_private_key(self, key_id: str) -> str:
-        path = self.store_path / f"{key_id}.private.pem"
-        if path.exists():
-            return path.read_text(encoding="utf-8").strip()
-        return ""
-
-    def get_public_key(self, key_id: str) -> str:
-        path = self.store_path / f"{key_id}.public.pem"
-        if path.exists():
-            return path.read_text(encoding="utf-8").strip()
-        return ""
+        self._revoked.add(key_id)
+        self._save_revoked()
+        return True
 
 
-def get_kms_provider(provider: str = "file", store_path: Optional[Path] = None) -> KMSProvider:
-    """Get a KMS provider instance."""
-    return KMSProvider(store_path=store_path or Path("out/kms"))
+def get_kms_provider(provider: str = "local", **kwargs) -> KMSProvider:
+    """Factory for KMS providers."""
+    if provider == "local":
+        keys_dir = Path(kwargs.get("keys_dir", "out/keys"))
+        return LocalKMS(keys_dir)
+    logger.warning("Unknown KMS provider %s, using local", provider)
+    return LocalKMS(Path(kwargs.get("keys_dir", "out/keys")))
