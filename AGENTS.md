@@ -53,6 +53,8 @@ The secure release platform adds these subsystems (all self-contained, no new de
 | Crypto | `src/waveos/crypto/` | Public-key signing (Ed25519/HMAC-SHA512), LocalKMS, anti-rollback epochs |
 | Rollout | `src/waveos/rollout_controls.py` | Channel policies, health gates, auto-rollback triggers |
 | Transfer | `src/waveos/transfer/` | Gateway adaptors (DMZ scan/approve/publish), diode sync, hash-chained audit trail |
+| Bridge Contracts | `src/waveos/bridge/contracts.py` | Interface schemas, adapter validation, routing enforcement, compat testing |
+| Governance | `src/waveos/governance/` | Promotion gates, immutable audit chain, separation of duties |
 
 CLI commands: `waveos bundle inspect/verify/sign`, `waveos attest generate`, `waveos sbom generate/verify`, `waveos agent-v2 install/status/activate/rollback/logs/update`, `waveos compat check`, `waveos registry publish/list/get`.
 
