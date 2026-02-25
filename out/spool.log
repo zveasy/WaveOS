@@ -126,3 +126,36 @@
 {"timestamp": "2026-02-25T00:22:29.387573+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.QOS_PRIORITIZATION entity=link/link-1 rationale=Moderate drift detected; prioritize critical traffic."}
 {"timestamp": "2026-02-25T00:22:29.387773+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.REROUTE entity=link/link-4 rationale=Link health is FAIL; recommend reroute."}
 {"timestamp": "2026-02-25T00:22:29.387872+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.RATE_LIMIT entity=link/link-4 rationale=Degraded link; reduce load to stabilize."}
+{"timestamp": "2026-02-25T00:25:52.444316+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:25:52.731268+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:25:52.737840+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.QOS_PRIORITIZATION entity=link/link-1 rationale=Moderate drift detected; prioritize critical traffic."}
+{"timestamp": "2026-02-25T00:25:52.737984+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.REROUTE entity=link/link-4 rationale=Link health is FAIL; recommend reroute."}
+{"timestamp": "2026-02-25T00:25:52.738044+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.RATE_LIMIT entity=link/link-4 rationale=Degraded link; reduce load to stabilize."}
+{"timestamp": "2026-02-25T00:25:53.032657+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-25T00:25:53.849280+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-25T00:25:54.134300+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-25T00:25:54.422246+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:25:54.701493+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:25:56.008851+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:25:56.322610+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:25:56.743004+00:00", "level": "INFO", "logger": "waveos.coordinator", "message": "Coordinator listening on 0.0.0.0:19998 (DB: /tmp/waveos_chaos_8xl49134/coordinator.db)"}
+{"timestamp": "2026-02-25T00:25:59.979887+00:00", "level": "WARNING", "logger": "waveos.cli", "message": "Graceful shutdown requested"}
+{"timestamp": "2026-02-25T00:26:11.524252+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:26:11.803127+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:26:11.809005+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.QOS_PRIORITIZATION entity=link/link-1 rationale=Moderate drift detected; prioritize critical traffic."}
+{"timestamp": "2026-02-25T00:26:11.809165+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.REROUTE entity=link/link-4 rationale=Link health is FAIL; recommend reroute."}
+{"timestamp": "2026-02-25T00:26:11.809226+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.RATE_LIMIT entity=link/link-4 rationale=Degraded link; reduce load to stabilize."}
+{"timestamp": "2026-02-25T00:29:08.841510+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:29:09.145852+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:29:09.151631+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.QOS_PRIORITIZATION entity=link/link-1 rationale=Moderate drift detected; prioritize critical traffic."}
+{"timestamp": "2026-02-25T00:29:09.151761+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.REROUTE entity=link/link-4 rationale=Link health is FAIL; recommend reroute."}
+{"timestamp": "2026-02-25T00:29:09.151813+00:00", "level": "INFO", "logger": "waveos.actuator", "message": "Actuator action=ActionType.RATE_LIMIT entity=link/link-4 rationale=Degraded link; reduce load to stabilize."}
+{"timestamp": "2026-02-25T00:29:09.434029+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-25T00:29:10.241316+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-25T00:29:10.507187+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=view_reports allowed=True"}
+{"timestamp": "2026-02-25T00:29:10.783481+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:29:11.064968+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:29:12.468170+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:29:12.769468+00:00", "level": "INFO", "logger": "waveos.cli", "message": "authz principal=local-user role=operator permission=run_pipeline allowed=True"}
+{"timestamp": "2026-02-25T00:29:13.133470+00:00", "level": "INFO", "logger": "waveos.coordinator", "message": "Coordinator listening on 0.0.0.0:19998 (DB: /tmp/waveos_chaos_2dy75m5b/coordinator.db)"}
+{"timestamp": "2026-02-25T00:29:16.394729+00:00", "level": "WARNING", "logger": "waveos.cli", "message": "Graceful shutdown requested"}
