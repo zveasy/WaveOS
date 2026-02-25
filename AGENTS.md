@@ -55,6 +55,8 @@ The secure release platform adds these subsystems (all self-contained, no new de
 | Transfer | `src/waveos/transfer/` | Gateway adaptors (DMZ scan/approve/publish), diode sync, hash-chained audit trail |
 | Bridge Contracts | `src/waveos/bridge/contracts.py` | Interface schemas, adapter validation, routing enforcement, compat testing |
 | Governance | `src/waveos/governance/` | Promotion gates, immutable audit chain, separation of duties |
+| Fleet | `src/waveos/fleet/` | State reconciliation, agent self-update, failure drills |
+| Dashboard | `src/waveos/dashboard/` | HTML operator dashboard served via stdlib HTTP (port 9300) |
 
 CLI commands: `waveos bundle inspect/verify/sign`, `waveos attest generate`, `waveos sbom generate/verify`, `waveos agent-v2 install/status/activate/rollback/logs/update`, `waveos compat check`, `waveos registry publish/list/get`.
 
