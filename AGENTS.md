@@ -51,6 +51,7 @@ The secure release platform adds these subsystems (all self-contained, no new de
 | Registry | `src/waveos/registry/` | File-system bundle registry (publish, list, get, channels) |
 | Bridge | `src/waveos/bridge/` | Legacy bridge orchestrator (mirror/canary/cutover) |
 | Rollout | `src/waveos/rollout_controls.py` | Channel policies, health gates, auto-rollback triggers |
+| Transfer | `src/waveos/transfer/` | Gateway adaptors, data diode sync, hash-chained audit trail |
 
 CLI commands: `waveos bundle inspect/verify/sign`, `waveos attest generate`, `waveos sbom generate/verify`, `waveos agent-v2 install/status/activate/rollback/logs/update`, `waveos compat check`, `waveos registry publish/list/get`.
 
