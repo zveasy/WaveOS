@@ -36,3 +36,22 @@ waveos report --in out --open   # optional: re-render + open report
 - **Lint has pre-existing warnings**: `ruff check` reports ~1067 issues (mostly import sorting and deprecated `typing` aliases). These are known; `ruff format --check` also shows ~79 files needing reformatting. The test suite passes cleanly regardless.
 - **No Docker needed for dev**: Docker is only needed for production image builds (`make docker-build`/`make docker-smoke`), not for local development or testing.
 - **Optional extras** (`[mqtt]`, `[ocpp]`, `[modbus]`, `[secrets]`, `[alerts]`, `[otel]`, `[encryption]`) are only needed for specific hardware/cloud integrations, not for the core dev workflow.
+
+### Secure release platform modules
+
+The secure release platform adds these subsystems (all self-contained, no new deps):
+
+| Module | Path | Purpose |
+|--------|------|---------|
+| Bundle V2 | `src/waveos/bundle_v2.py` | Enhanced manifest with targets, services, bridge, rollback, policy gates |
+| Attestation | `src/waveos/attestation.py` | Build provenance (commit, CI, builder identity) |
+| SBOM | `src/waveos/sbom.py` | CycloneDX generation + blocklist/allowlist verification |
+| Agent | `src/waveos/agent/` | State machine, side-by-side install, activate, rollback, evidence packs |
+| Compat | `src/waveos/compat/` | Preflight checks (OS/arch/libs/disk) + runtime strategies |
+| Registry | `src/waveos/registry/` | File-system bundle registry (publish, list, get, channels) |
+| Bridge | `src/waveos/bridge/` | Legacy bridge orchestrator (mirror/canary/cutover) |
+| Rollout | `src/waveos/rollout_controls.py` | Channel policies, health gates, auto-rollback triggers |
+
+CLI commands: `waveos bundle inspect/verify/sign`, `waveos attest generate`, `waveos sbom generate/verify`, `waveos agent-v2 install/status/activate/rollback/logs/update`, `waveos compat check`, `waveos registry publish/list/get`.
+
+Documentation: `docs/BUNDLE_SPEC.md`, `docs/AGENT_STATE_MACHINE.md`, `docs/DEPENDENCY_STRATEGIES.md`, `docs/BRIDGE_PATTERNS.md`, `docs/CONTROLLED_TRANSFER_INTEGRATION.md`, `docs/AUDIT_MODEL.md`. Schema: `schemas/bundle_manifest.schema.json`.
