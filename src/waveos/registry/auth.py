@@ -1,4 +1,4 @@
-"""Registry authentication, authorization, and rate limiting."""
+"""Registry authentication and authorization — mTLS + device identity + channel clearance."""
 
 from __future__ import annotations
 
@@ -6,11 +6,10 @@ import hashlib
 import hmac
 import json
 import os
-import ssl
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 from waveos.utils import get_logger, utc_now
 
@@ -18,108 +17,65 @@ logger = get_logger("waveos.registry.auth")
 
 
 @dataclass
-class DeviceCredential:
-    """Device identity for registry access."""
+class DeviceIdentity:
+    """Authenticated device/node identity."""
     device_id: str
     site_id: str = ""
-    clearance: str = "unclassified"
-    allowed_channels: List[str] = field(default_factory=lambda: ["dev"])
-    token_hash: str = ""
+    clearance: str = "dev"
+    roles: List[str] = field(default_factory=list)
     cert_fingerprint: str = ""
-    revoked: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
-        return {
-            "device_id": self.device_id, "site_id": self.site_id,
-            "clearance": self.clearance, "allowed_channels": self.allowed_channels,
-            "token_hash": self.token_hash, "cert_fingerprint": self.cert_fingerprint,
-            "revoked": self.revoked, "metadata": self.metadata,
-        }
+        return {"device_id": self.device_id, "site_id": self.site_id, "clearance": self.clearance,
+                "roles": self.roles, "cert_fingerprint": self.cert_fingerprint, "metadata": self.metadata}
 
     @classmethod
-    def from_dict(cls, d: dict) -> DeviceCredential:
+    def from_dict(cls, d: dict) -> DeviceIdentity:
         return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
 
-class CredentialStore:
-    """Persistent credential store for device/node authentication."""
+@dataclass
+class ChannelACL:
+    """Access control for registry channels."""
+    channel: str
+    allowed_publishers: List[str] = field(default_factory=list)
+    allowed_consumers: List[str] = field(default_factory=list)
+    require_ci_publisher: bool = False
+    min_clearance: str = "dev"
 
-    def __init__(self, path: Path) -> None:
-        self._path = path
-        self._creds: Dict[str, DeviceCredential] = {}
-        self._load()
+    def to_dict(self) -> dict:
+        return {"channel": self.channel, "allowed_publishers": self.allowed_publishers,
+                "allowed_consumers": self.allowed_consumers, "require_ci_publisher": self.require_ci_publisher,
+                "min_clearance": self.min_clearance}
 
-    def _load(self) -> None:
-        if self._path.exists():
-            try:
-                data = json.loads(self._path.read_text(encoding="utf-8"))
-                self._creds = {d["device_id"]: DeviceCredential.from_dict(d) for d in data}
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-    def _save(self) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        self._path.write_text(
-            json.dumps([c.to_dict() for c in self._creds.values()], indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-    def register(self, cred: DeviceCredential) -> None:
-        self._creds[cred.device_id] = cred
-        self._save()
-
-    def get(self, device_id: str) -> Optional[DeviceCredential]:
-        return self._creds.get(device_id)
-
-    def revoke(self, device_id: str) -> bool:
-        if device_id in self._creds:
-            self._creds[device_id].revoked = True
-            self._save()
-            return True
-        return False
-
-    def list_all(self) -> List[DeviceCredential]:
-        return list(self._creds.values())
-
-    def authenticate_token(self, device_id: str, token: str) -> Optional[DeviceCredential]:
-        cred = self._creds.get(device_id)
-        if not cred or cred.revoked:
-            return None
-        expected = cred.token_hash
-        actual = hashlib.sha256(token.encode("utf-8")).hexdigest()
-        if hmac.compare_digest(expected, actual):
-            return cred
-        return None
-
-    def authenticate_cert(self, cert_fingerprint: str) -> Optional[DeviceCredential]:
-        for cred in self._creds.values():
-            if cred.revoked:
-                continue
-            if cred.cert_fingerprint and hmac.compare_digest(cred.cert_fingerprint, cert_fingerprint):
-                return cred
-        return None
-
-    def authorize_channel(self, device_id: str, channel: str) -> bool:
-        cred = self._creds.get(device_id)
-        if not cred or cred.revoked:
-            return False
-        return channel in cred.allowed_channels
+    @classmethod
+    def from_dict(cls, d: dict) -> ChannelACL:
+        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
 
+CLEARANCE_LEVELS = {"dev": 0, "staging": 1, "prod": 2, "mission-critical": 3}
+
+DEFAULT_CHANNEL_ACLS: Dict[str, ChannelACL] = {
+    "dev": ChannelACL(channel="dev", min_clearance="dev"),
+    "staging": ChannelACL(channel="staging", min_clearance="staging", require_ci_publisher=True),
+    "prod": ChannelACL(channel="prod", min_clearance="prod", require_ci_publisher=True),
+    "mission-critical": ChannelACL(channel="mission-critical", min_clearance="mission-critical", require_ci_publisher=True),
+}
+
+
+@dataclass
 class RateLimiter:
     """Token-bucket rate limiter per device/site."""
-
-    def __init__(self, max_requests: int = 60, window_sec: int = 60) -> None:
-        self._max = max_requests
-        self._window = window_sec
-        self._buckets: Dict[str, List[float]] = {}
+    max_requests: int = 100
+    window_sec: int = 60
+    _buckets: Dict[str, List[float]] = field(default_factory=dict)
 
     def allow(self, key: str) -> bool:
         now = time.monotonic()
         bucket = self._buckets.setdefault(key, [])
-        bucket[:] = [t for t in bucket if now - t < self._window]
-        if len(bucket) >= self._max:
+        bucket[:] = [t for t in bucket if now - t < self.window_sec]
+        if len(bucket) >= self.max_requests:
             return False
         bucket.append(now)
         return True
@@ -128,54 +84,85 @@ class RateLimiter:
         self._buckets.pop(key, None)
 
 
-def build_ssl_context(
-    cert_path: Optional[str] = None,
-    key_path: Optional[str] = None,
-    ca_path: Optional[str] = None,
-    require_client_cert: bool = False,
-) -> Optional[ssl.SSLContext]:
-    """Build SSL context for mTLS registry server/client."""
-    if not cert_path or not key_path:
-        return None
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER if require_client_cert else ssl.PROTOCOL_TLS_CLIENT)
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        ctx.load_cert_chain(cert_path, key_path)
-        if ca_path:
-            ctx.load_verify_locations(ca_path)
-        if require_client_cert:
-            ctx.verify_mode = ssl.CERT_REQUIRED
-        else:
-            ctx.verify_mode = ssl.CERT_OPTIONAL
-        return ctx
-    except (ssl.SSLError, OSError) as exc:
-        logger.warning("SSL context creation failed: %s", exc)
-        return None
+class RegistryAuthenticator:
+    """Authenticates devices and enforces channel access control."""
 
+    def __init__(self, device_store_path: Optional[Path] = None, acls: Optional[Dict[str, ChannelACL]] = None) -> None:
+        self._devices: Dict[str, DeviceIdentity] = {}
+        self._acls = acls or dict(DEFAULT_CHANNEL_ACLS)
+        self._rate_limiter = RateLimiter()
+        self._tokens: Dict[str, str] = {}
+        if device_store_path and device_store_path.exists():
+            self._load_devices(device_store_path)
+        self._load_tokens_from_env()
 
-def build_client_ssl_context(
-    cert_path: Optional[str] = None,
-    key_path: Optional[str] = None,
-    ca_path: Optional[str] = None,
-) -> Optional[ssl.SSLContext]:
-    """Build SSL context for mTLS client connections."""
-    if not cert_path:
-        return None
-    try:
-        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        if cert_path and key_path:
-            ctx.load_cert_chain(cert_path, key_path)
-        if ca_path:
-            ctx.load_verify_locations(ca_path)
-        else:
-            ctx.check_hostname = False
-            ctx.verify_mode = ssl.CERT_NONE
-        return ctx
-    except (ssl.SSLError, OSError) as exc:
-        logger.warning("Client SSL context failed: %s", exc)
+    def _load_devices(self, path: Path) -> None:
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            for d in data:
+                dev = DeviceIdentity.from_dict(d)
+                self._devices[dev.device_id] = dev
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to load device store: %s", exc)
+
+    def _load_tokens_from_env(self) -> None:
+        raw = os.getenv("WAVEOS_REGISTRY_TOKENS", "")
+        for pair in raw.split(","):
+            pair = pair.strip()
+            if "=" in pair:
+                token, device_id = pair.split("=", 1)
+                self._tokens[token.strip()] = device_id.strip()
+
+    def register_device(self, device: DeviceIdentity) -> None:
+        self._devices[device.device_id] = device
+
+    def authenticate_token(self, token: str) -> Optional[DeviceIdentity]:
+        device_id = self._tokens.get(token)
+        if device_id:
+            return self._devices.get(device_id, DeviceIdentity(device_id=device_id))
         return None
 
+    def authenticate_cert(self, cert_fingerprint: str) -> Optional[DeviceIdentity]:
+        for dev in self._devices.values():
+            if dev.cert_fingerprint and dev.cert_fingerprint == cert_fingerprint:
+                return dev
+        return None
 
-def hash_token(token: str) -> str:
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+    def authorize_publish(self, device: DeviceIdentity, channel: str) -> tuple[bool, str]:
+        acl = self._acls.get(channel, self._acls.get("dev"))
+        if not acl:
+            return True, ""
+        if acl.require_ci_publisher and "ci" not in device.roles:
+            return False, f"Channel {channel} requires CI publisher role"
+        if acl.allowed_publishers and device.device_id not in acl.allowed_publishers:
+            return False, f"Device {device.device_id} not in allowed publishers for {channel}"
+        dev_clearance = CLEARANCE_LEVELS.get(device.clearance, 0)
+        min_clearance = CLEARANCE_LEVELS.get(acl.min_clearance, 0)
+        if dev_clearance < min_clearance:
+            return False, f"Device clearance {device.clearance} below minimum {acl.min_clearance}"
+        return True, ""
+
+    def authorize_download(self, device: DeviceIdentity, channel: str) -> tuple[bool, str]:
+        acl = self._acls.get(channel, self._acls.get("dev"))
+        if not acl:
+            return True, ""
+        if acl.allowed_consumers and device.device_id not in acl.allowed_consumers:
+            return False, f"Device {device.device_id} not in allowed consumers for {channel}"
+        dev_clearance = CLEARANCE_LEVELS.get(device.clearance, 0)
+        min_clearance = CLEARANCE_LEVELS.get(acl.min_clearance, 0)
+        if dev_clearance < min_clearance:
+            return False, f"Device clearance {device.clearance} below minimum {acl.min_clearance}"
+        return True, ""
+
+    def check_rate_limit(self, device_id: str) -> bool:
+        return self._rate_limiter.allow(device_id)
+
+    def save_devices(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = [d.to_dict() for d in self._devices.values()]
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def generate_token(self, device_id: str) -> str:
+        token = hashlib.sha256(f"{device_id}:{utc_now().isoformat()}:{os.urandom(16).hex()}".encode()).hexdigest()[:48]
+        self._tokens[token] = device_id
+        return token
