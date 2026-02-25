@@ -36,7 +36,7 @@ from waveos.sim import build_demo_dataset
 from waveos.sim.generator import generate_telemetry, _make_links
 from waveos.validation import validate_file
 from waveos.versioning import current_version
-from waveos.bundle import build_manifest, encrypt_bundle_artifacts, sign_manifest, write_manifest
+from waveos.bundle import build_manifest, encrypt_bundle_artifacts, sign_manifest, verify_manifest, write_manifest
 from waveos.plugins.registry import list_plugins, get_registry, PluginKind
 from waveos.device_api import get_device_registry, get_driver_instance, DeviceCapability
 from waveos.update_agent import install_bundle, install_bundle_from_cache, promote_canary_bundle, rollback_bundle
@@ -1484,6 +1484,482 @@ def cmd_bundle_rollback(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_bundle_inspect(args: argparse.Namespace) -> int:
+    """Inspect a bundle and show summary."""
+    from waveos.bundle_v2 import inspect_bundle
+    bundle_dir = Path(args.dir)
+    if not bundle_dir.is_dir():
+        console.print(f"Not a directory: {bundle_dir}")
+        return 1
+    info = inspect_bundle(bundle_dir)
+    if "error" in info:
+        console.print(f"[red]{info['error']}[/red]")
+        return 1
+    table = Table(title="Bundle Inspection")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    for key, value in info.items():
+        if isinstance(value, (list, dict)):
+            value = json.dumps(value, indent=2) if value else "—"
+        table.add_row(str(key), str(value))
+    console.print(table)
+    return 0
+
+
+def cmd_bundle_verify(args: argparse.Namespace) -> int:
+    """Verify bundle integrity and signature."""
+    from waveos.bundle_v2 import verify_bundle_checksums, verify_bundle_with_trust_store
+    bundle_dir = Path(args.dir)
+    trust_store = Path(args.trust_store) if getattr(args, "trust_store", None) else None
+    if trust_store:
+        ok, errors = verify_bundle_with_trust_store(bundle_dir, trust_store)
+    else:
+        config = getattr(args, "config_obj", None)
+        hmac_key = None
+        if config and config.bundle_hmac_key_secret:
+            hmac_key = get_secret(config.bundle_hmac_key_secret, provider=config.secrets_provider)
+        if hmac_key:
+            sig_ok = verify_manifest(bundle_dir, hmac_key)
+            cs_ok, cs_errors = verify_bundle_checksums(bundle_dir)
+            ok = sig_ok and cs_ok
+            errors = [] if sig_ok else ["Signature verification failed"]
+            errors.extend(cs_errors)
+        else:
+            ok, errors = verify_bundle_checksums(bundle_dir)
+    if ok:
+        console.print("[green]Bundle verification passed[/green]")
+        return 0
+    for e in errors:
+        console.print(f"[red]{e}[/red]")
+    return 1
+
+
+def cmd_bundle_sign(args: argparse.Namespace) -> int:
+    """Sign a bundle manifest."""
+    bundle_dir = Path(args.dir)
+    config = getattr(args, "config_obj", None)
+    hmac_key = None
+    if config and config.bundle_hmac_key_secret:
+        hmac_key = get_secret(config.bundle_hmac_key_secret, provider=config.secrets_provider)
+    if not hmac_key:
+        hmac_key = os.getenv("WAVEOS_BUNDLE_HMAC_KEY", "")
+    if not hmac_key:
+        console.print("Missing HMAC key; set WAVEOS_BUNDLE_HMAC_KEY or bundle_hmac_key_secret in config")
+        return 2
+    manifest_path = bundle_dir / "bundle.json"
+    if not manifest_path.exists():
+        console.print("No bundle.json found")
+        return 1
+    sig = sign_manifest(manifest_path, hmac_key)
+    console.print(f"Signed bundle: {sig[:16]}...")
+    return 0
+
+
+def cmd_attest_generate(args: argparse.Namespace) -> int:
+    """Generate build provenance attestation for a bundle."""
+    from waveos.attestation import generate_attestation, write_attestation
+    bundle_dir = Path(args.dir)
+    bundle_id = getattr(args, "bundle_id", "") or ""
+    attestation = generate_attestation(bundle_dir, bundle_id=bundle_id)
+    path = write_attestation(bundle_dir, attestation)
+    console.print(f"Attestation written to {path}")
+    if attestation.provenance:
+        console.print(f"  build_id: {attestation.provenance.build_id}")
+        console.print(f"  commit: {attestation.provenance.commit_sha[:12] if attestation.provenance.commit_sha else '—'}")
+        console.print(f"  ci: {attestation.provenance.ci_provider}")
+    return 0
+
+
+def cmd_sbom_generate(args: argparse.Namespace) -> int:
+    """Generate SBOM (CycloneDX) for current environment."""
+    from waveos.sbom import generate_sbom, write_sbom
+    bundle_id = getattr(args, "bundle_id", "") or ""
+    sbom = generate_sbom(bundle_id=bundle_id)
+    out_path = Path(args.out)
+    write_sbom(sbom, out_path)
+    console.print(f"SBOM written to {out_path} ({len(sbom.components)} components)")
+    return 0
+
+
+def cmd_sbom_verify(args: argparse.Namespace) -> int:
+    """Verify SBOM against policy (blocklist/allowlist)."""
+    from waveos.sbom import read_sbom, verify_sbom
+    path = Path(args.file)
+    sbom = read_sbom(path)
+    if not sbom:
+        console.print(f"Cannot read SBOM from {path}")
+        return 1
+    blocklist = [b.strip() for b in args.blocklist.split(",")] if getattr(args, "blocklist", None) else None
+    allowlist = [a.strip() for a in args.allowlist.split(",")] if getattr(args, "allowlist", None) else None
+    ok, violations = verify_sbom(sbom, blocklist=blocklist, allowlist=allowlist)
+    if ok:
+        console.print(f"[green]SBOM verification passed ({len(sbom.components)} components)[/green]")
+        return 0
+    for v in violations:
+        console.print(f"[red]{v}[/red]")
+    return 1
+
+
+def cmd_agent_install(args: argparse.Namespace) -> int:
+    """Bootstrap agent installation."""
+    from waveos.agent import AgentManager
+    from waveos.agent.manager import AgentConfig
+    base_dir = Path(getattr(args, "base_dir", "out/agent") or "out/agent")
+    apps_dir = Path(getattr(args, "apps_dir", "/opt/waveos/apps") or "/opt/waveos/apps")
+    config = AgentConfig(base_dir=base_dir, apps_dir=apps_dir)
+    manager = AgentManager(config)
+    result = manager.install_bootstrap()
+    console.print(f"Agent installed: base={result['base_dir']} apps={result['apps_dir']}")
+    return 0
+
+
+def cmd_agent_status(args: argparse.Namespace) -> int:
+    """Show agent status."""
+    from waveos.agent import AgentManager
+    from waveos.agent.manager import AgentConfig
+    base_dir = Path(getattr(args, "base_dir", "out/agent") or "out/agent")
+    config = AgentConfig(base_dir=base_dir)
+    manager = AgentManager(config)
+    status = manager.status()
+    table = Table(title="Agent Status")
+    table.add_column("Field", style="cyan")
+    table.add_column("Value")
+    for k, v in status.items():
+        table.add_row(str(k), str(v))
+    console.print(table)
+    return 0
+
+
+def cmd_agent_activate(args: argparse.Namespace) -> int:
+    """Activate a bundle via the agent."""
+    from waveos.agent import AgentManager
+    from waveos.agent.manager import AgentConfig
+    bundle_dir = Path(args.bundle_dir)
+    base_dir = Path(getattr(args, "base_dir", "out/agent") or "out/agent")
+    apps_dir = Path(getattr(args, "apps_dir", "/opt/waveos/apps") or "/opt/waveos/apps")
+    config_obj = getattr(args, "config_obj", None)
+    hmac_key = None
+    if config_obj and config_obj.bundle_hmac_key_secret:
+        hmac_key = get_secret(config_obj.bundle_hmac_key_secret, provider=config_obj.secrets_provider)
+    agent_config = AgentConfig(base_dir=base_dir, apps_dir=apps_dir)
+    manager = AgentManager(agent_config)
+    result = manager.activate_bundle(
+        bundle_dir,
+        bundle_id=getattr(args, "bundle_id", "") or "",
+        app_name=getattr(args, "app_name", "default") or "default",
+        version=getattr(args, "version", "latest") or "latest",
+        hmac_key=hmac_key,
+    )
+    for step in result.get("steps", []):
+        status_str = "[green]OK[/green]" if step.get("ok") else "[red]FAIL[/red]"
+        console.print(f"  {step.get('step', '?')}: {status_str}")
+    if result.get("evidence_path"):
+        console.print(f"Evidence: {result['evidence_path']}")
+    return 0
+
+
+def cmd_agent_rollback(args: argparse.Namespace) -> int:
+    """Rollback agent to previous version."""
+    from waveos.agent import AgentManager
+    from waveos.agent.manager import AgentConfig
+    base_dir = Path(getattr(args, "base_dir", "out/agent") or "out/agent")
+    config = AgentConfig(base_dir=base_dir)
+    manager = AgentManager(config)
+    result = manager.rollback(app_name=getattr(args, "app_name", "default") or "default")
+    if result.get("ok"):
+        console.print(f"Rolled back to: {result['rolled_back_to']}")
+        return 0
+    console.print(f"[red]Rollback failed: {result.get('error', 'unknown')}[/red]")
+    return 1
+
+
+def cmd_agent_logs(args: argparse.Namespace) -> int:
+    """Show agent event logs."""
+    from waveos.agent import AgentManager
+    from waveos.agent.manager import AgentConfig
+    base_dir = Path(getattr(args, "base_dir", "out/agent") or "out/agent")
+    config = AgentConfig(base_dir=base_dir)
+    manager = AgentManager(config)
+    logs = manager.get_logs(limit=getattr(args, "limit", 50))
+    if not logs:
+        console.print("No agent logs.")
+        return 0
+    for entry in logs:
+        console.print(json.dumps(entry, default=str))
+    return 0
+
+
+def cmd_compat_check(args: argparse.Namespace) -> int:
+    """Run compatibility preflight checks on a bundle."""
+    from waveos.compat import run_preflight
+    bundle_dir = Path(args.bundle_dir)
+    result = run_preflight(bundle_dir)
+    outcome = result.get("outcome", "unknown")
+    color = {"allow": "green", "warn": "yellow", "block": "red", "allow_with_isolation": "cyan"}.get(outcome, "white")
+    console.print(f"Outcome: [{color}]{outcome}[/{color}]")
+    for check in result.get("checks", []):
+        icon = "✓" if check.get("passed") else "✗"
+        console.print(f"  {icon} {check['name']}: {check.get('message', '')}")
+    return 0 if outcome != "block" else 1
+
+
+def cmd_registry_publish(args: argparse.Namespace) -> int:
+    """Publish a bundle to the registry."""
+    from waveos.registry import RegistryStore
+    bundle_dir = Path(args.bundle_dir)
+    registry_root = Path(getattr(args, "registry", "out/registry") or "out/registry")
+    channel = getattr(args, "channel", "dev") or "dev"
+    store = RegistryStore(registry_root)
+    entry = store.publish(bundle_dir, channel=channel)
+    console.print(f"Published {entry.bundle_id} to {channel} ({entry.size_bytes} bytes)")
+    return 0
+
+
+def cmd_registry_list(args: argparse.Namespace) -> int:
+    """List bundles in the registry."""
+    from waveos.registry import RegistryStore
+    registry_root = Path(getattr(args, "registry", "out/registry") or "out/registry")
+    channel = getattr(args, "channel", None)
+    store = RegistryStore(registry_root)
+    entries = store.list_bundles(channel=channel)
+    if not entries:
+        console.print("No bundles in registry.")
+        return 0
+    table = Table(title="Registry Bundles")
+    table.add_column("bundle_id", style="cyan")
+    table.add_column("version")
+    table.add_column("channel")
+    table.add_column("published_at")
+    table.add_column("size")
+    for e in entries:
+        table.add_row(e.bundle_id, e.version, e.channel, e.published_at[:19], f"{e.size_bytes}B")
+    console.print(table)
+    return 0
+
+
+def cmd_registry_get(args: argparse.Namespace) -> int:
+    """Get a bundle from the registry."""
+    from waveos.registry import RegistryStore
+    registry_root = Path(getattr(args, "registry", "out/registry") or "out/registry")
+    store = RegistryStore(registry_root)
+    path = store.get_bundle(args.bundle_id)
+    if path:
+        console.print(f"Bundle location: {path}")
+        return 0
+    console.print(f"Bundle not found: {args.bundle_id}")
+    return 1
+
+
+def cmd_agent_update(args: argparse.Namespace) -> int:
+    """Pull latest bundle from registry and activate (agent pull-based update)."""
+    from waveos.registry import RegistryStore
+    from waveos.agent import AgentManager
+    from waveos.agent.manager import AgentConfig
+    registry_root = Path(getattr(args, "registry", "out/registry") or "out/registry")
+    channel = getattr(args, "channel", "prod") or "prod"
+    base_dir = Path(getattr(args, "base_dir", "out/agent") or "out/agent")
+    store = RegistryStore(registry_root)
+    entries = store.list_bundles(channel=channel)
+    if not entries:
+        console.print(f"No bundles in channel {channel}")
+        return 0
+    latest = entries[0]
+    bundle_path = store.get_bundle(latest.bundle_id)
+    if not bundle_path:
+        console.print(f"Cannot retrieve bundle {latest.bundle_id}")
+        return 1
+    agent_config = AgentConfig(base_dir=base_dir)
+    manager = AgentManager(agent_config)
+    result = manager.activate_bundle(bundle_path, bundle_id=latest.bundle_id)
+    all_ok = all(s.get("ok", False) for s in result.get("steps", []))
+    if all_ok:
+        console.print(f"Updated to {latest.bundle_id} from channel {channel}")
+        return 0
+    console.print("[red]Update failed[/red]")
+    return 1
+
+
+def cmd_registry_serve(args: argparse.Namespace) -> int:
+    """Start the registry HTTP server with optional mTLS."""
+    from waveos.registry.server import run_registry_server
+    host = getattr(args, "host", "0.0.0.0") or "0.0.0.0"
+    port = int(getattr(args, "port", 9200) or 9200)
+    registry_root = getattr(args, "registry", "out/registry") or "out/registry"
+    cert = getattr(args, "cert", None)
+    key = getattr(args, "key", None)
+    ca = getattr(args, "ca", None)
+    mtls = getattr(args, "mtls", False)
+    run_registry_server(host=host, port=port, registry_root=registry_root,
+                        cert_path=cert, key_path=key, ca_path=ca, require_client_cert=mtls)
+    return 0
+
+
+def cmd_transfer_gateway(args: argparse.Namespace) -> int:
+    """Run a transfer gateway job."""
+    from waveos.transfer import TransferGateway
+    source = Path(args.source)
+    dest_registry = getattr(args, "dest_registry", "out/mirror") or "out/mirror"
+    staging = Path(getattr(args, "staging_dir", "/tmp/waveos_staging") or "/tmp/waveos_staging")
+    channel = getattr(args, "channel", "prod") or "prod"
+    bundle_id = getattr(args, "bundle_id", source.name)
+    gw = TransferGateway(staging)
+    job = gw.create_job(bundle_id, source, dest_registry, channel=channel)
+    result = gw.execute_job(job.job_id)
+    console.print(f"Transfer {result.status.value}: {result.bundle_id}")
+    if result.error:
+        console.print(f"[red]{result.error}[/red]")
+        return 1
+    return 0
+
+
+def cmd_crypto_keygen(args: argparse.Namespace) -> int:
+    """Generate a signing key pair."""
+    from waveos.crypto import generate_keypair
+    from waveos.crypto.signing import save_keypair
+    key_id = getattr(args, "key_id", "") or ""
+    algorithm = getattr(args, "algorithm", "hmac-sha256") or "hmac-sha256"
+    key = generate_keypair(key_id=key_id, algorithm=algorithm)
+    out = Path(getattr(args, "out", f"out/keys/{key.key_id}.json"))
+    save_keypair(key, out)
+    console.print(f"Key generated: {key.key_id} ({key.algorithm}) -> {out}")
+    return 0
+
+
+def cmd_crypto_sign(args: argparse.Namespace) -> int:
+    """Sign a bundle with a key pair."""
+    from waveos.crypto import sign_bundle
+    from waveos.crypto.signing import load_keypair
+    bundle_dir = Path(args.dir)
+    key_path = Path(args.key_file)
+    key = load_keypair(key_path)
+    if not key:
+        console.print(f"Cannot load key from {key_path}")
+        return 1
+    sig = sign_bundle(bundle_dir, key)
+    console.print(f"Signed with {sig['algorithm']} key {sig['key_id']}")
+    return 0
+
+
+def cmd_crypto_verify(args: argparse.Namespace) -> int:
+    """Verify a bundle signature with a public key."""
+    from waveos.crypto import verify_bundle_signature
+    from waveos.crypto.signing import load_keypair
+    bundle_dir = Path(args.dir)
+    key_path = Path(args.key_file) if getattr(args, "key_file", None) else None
+    key = load_keypair(key_path) if key_path else None
+    ok, err = verify_bundle_signature(bundle_dir, key=key)
+    if ok:
+        console.print("[green]Signature verified[/green]")
+        return 0
+    console.print(f"[red]Verification failed: {err}[/red]")
+    return 1
+
+
+def cmd_governance_promote(args: argparse.Namespace) -> int:
+    """Evaluate a promotion request."""
+    from waveos.governance import evaluate_promotion, PromotionRequest
+    req = PromotionRequest(
+        bundle_id=args.bundle_id, from_channel=args.from_channel, to_channel=args.to_channel,
+        requester=getattr(args, "requester", "cli") or "cli",
+        approvers=[a.strip() for a in (getattr(args, "approvers", "") or "").split(",") if a.strip()],
+        builder=getattr(args, "builder", "") or "",
+        has_signature=getattr(args, "has_signature", False),
+        has_attestation=getattr(args, "has_attestation", False),
+        has_sbom=getattr(args, "has_sbom", False),
+        health_score=float(getattr(args, "health_score", 100)),
+        is_ci=getattr(args, "is_ci", False),
+    )
+    result = evaluate_promotion(req)
+    if result.approved:
+        console.print(f"[green]Promotion approved[/green]: {args.from_channel} -> {args.to_channel}")
+    else:
+        console.print(f"[red]Promotion denied[/red]")
+        for v in result.violations:
+            console.print(f"  - {v}")
+    return 0 if result.approved else 1
+
+
+def cmd_fleet_reconcile(args: argparse.Namespace) -> int:
+    """Reconcile fleet to desired state."""
+    from waveos.fleet import FleetReconciler, DesiredFleetState
+    desired_path = Path(args.desired)
+    if not desired_path.exists():
+        console.print(f"Desired state file not found: {desired_path}")
+        return 1
+    reconciler = FleetReconciler.load_desired(desired_path)
+    current = json.loads(Path(args.current).read_text()) if getattr(args, "current", None) else {}
+    result = reconciler.reconcile(current)
+    table = Table(title="Fleet Reconciliation")
+    table.add_column("Node")
+    table.add_column("Action")
+    table.add_column("Current")
+    table.add_column("Desired")
+    for a in result.actions:
+        table.add_row(a.node_id, a.action, a.current_bundle or "—", a.desired_bundle or "—")
+    console.print(table)
+    return 0
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Start the operator dashboard."""
+    from waveos.dashboard import run_dashboard
+    host = getattr(args, "host", "0.0.0.0") or "0.0.0.0"
+    port = int(getattr(args, "port", 9300) or 9300)
+    registry = getattr(args, "registry", "out/registry") or "out/registry"
+    run_dashboard(host=host, port=port, registry_root=registry)
+    return 0
+
+
+def cmd_drills_list(args: argparse.Namespace) -> int:
+    """List available failure drills."""
+    from waveos.fleet.drills import list_drills
+    for drill in list_drills():
+        console.print(f"  [bold]{drill.name}[/bold] ({drill.drill_type.value})")
+        console.print(f"    {drill.description}")
+    return 0
+
+
+def cmd_drills_run(args: argparse.Namespace) -> int:
+    """Run a failure drill (dry run)."""
+    from waveos.fleet.drills import list_drills, run_drill
+    name = args.drill_name
+    drill = next((d for d in list_drills() if d.name == name), None)
+    if not drill:
+        console.print(f"Unknown drill: {name}")
+        return 1
+    result = run_drill(drill)
+    status = "[green]PASS[/green]" if result.passed else "[red]FAIL[/red]"
+    console.print(f"Drill {name}: {status}")
+    for obs in result.observations:
+        console.print(f"  {obs}")
+    return 0
+
+
+def cmd_quarantine(args: argparse.Namespace) -> int:
+    """Quarantine/ban/release a bundle."""
+    from waveos.health_contracts import QuarantineRegistry
+    reg_path = Path(getattr(args, "registry_path", "out/registry/quarantine.json") or "out/registry/quarantine.json")
+    qr = QuarantineRegistry(reg_path)
+    action = args.quarantine_action
+    bundle_id = args.bundle_id
+    if action == "quarantine":
+        qr.quarantine(bundle_id, reason=getattr(args, "reason", ""), by="cli")
+        console.print(f"Bundle {bundle_id} quarantined")
+    elif action == "ban":
+        qr.ban(bundle_id, reason=getattr(args, "reason", ""), by="cli")
+        console.print(f"Bundle {bundle_id} banned")
+    elif action == "release":
+        qr.release(bundle_id)
+        console.print(f"Bundle {bundle_id} released")
+    elif action == "status":
+        entry = qr.get_status(bundle_id)
+        if entry:
+            console.print(f"{bundle_id}: {entry.status.value} — {entry.reason}")
+        else:
+            console.print(f"{bundle_id}: active (not quarantined)")
+    return 0
+
+
 def _send_alerts_if_configured(args: argparse.Namespace, run_id: str, events: List[Event]) -> None:
     config = getattr(args, "config_obj", None)
     if not config:
@@ -1788,6 +2264,166 @@ def build_parser() -> argparse.ArgumentParser:
     bundle_promote.set_defaults(func=cmd_bundle_promote)
     bundle_rollback = bundle_sub.add_parser("rollback", help="Rollback bundle")
     bundle_rollback.set_defaults(func=cmd_bundle_rollback)
+    bundle_inspect = bundle_sub.add_parser("inspect", help="Inspect bundle contents and metadata (V2)")
+    bundle_inspect.add_argument("--dir", required=True, help="Bundle directory to inspect")
+    bundle_inspect.set_defaults(func=cmd_bundle_inspect)
+    bundle_verify = bundle_sub.add_parser("verify", help="Verify bundle integrity and signature")
+    bundle_verify.add_argument("--dir", required=True, help="Bundle directory")
+    bundle_verify.add_argument("--trust-store", help="Path to trust store directory (contains *.key files)")
+    bundle_verify.set_defaults(func=cmd_bundle_verify)
+    bundle_sign = bundle_sub.add_parser("sign", help="Sign bundle manifest")
+    bundle_sign.add_argument("--dir", required=True, help="Bundle directory")
+    bundle_sign.set_defaults(func=cmd_bundle_sign)
+
+    attest_parser = sub.add_parser("attest", help="Attestation management")
+    attest_sub = attest_parser.add_subparsers(dest="attest_command")
+    attest_gen = attest_sub.add_parser("generate", help="Generate build provenance attestation")
+    attest_gen.add_argument("--dir", required=True, help="Bundle directory")
+    attest_gen.add_argument("--bundle-id", default="", help="Bundle ID")
+    attest_gen.set_defaults(func=cmd_attest_generate)
+
+    sbom_parser = sub.add_parser("sbom", help="SBOM generation and verification")
+    sbom_sub = sbom_parser.add_subparsers(dest="sbom_command")
+    sbom_gen = sbom_sub.add_parser("generate", help="Generate SBOM (CycloneDX)")
+    sbom_gen.add_argument("--out", required=True, help="Output JSON path")
+    sbom_gen.add_argument("--bundle-id", default="", help="Bundle ID")
+    sbom_gen.set_defaults(func=cmd_sbom_generate)
+    sbom_verify = sbom_sub.add_parser("verify", help="Verify SBOM against policy")
+    sbom_verify.add_argument("file", help="SBOM JSON file")
+    sbom_verify.add_argument("--blocklist", help="Comma-separated blocked package names")
+    sbom_verify.add_argument("--allowlist", help="Comma-separated allowed package names")
+    sbom_verify.set_defaults(func=cmd_sbom_verify)
+
+    agent_v2_parser = sub.add_parser("agent-v2", help="Agent V2: install, status, activate, rollback, logs")
+    agent_v2_sub = agent_v2_parser.add_subparsers(dest="agent_v2_command")
+    agent_v2_install = agent_v2_sub.add_parser("install", help="Bootstrap agent installation")
+    agent_v2_install.add_argument("--base-dir", default="out/agent", help="Agent base directory")
+    agent_v2_install.add_argument("--apps-dir", default="/opt/waveos/apps", help="Apps install directory")
+    agent_v2_install.set_defaults(func=cmd_agent_install)
+    agent_v2_status = agent_v2_sub.add_parser("status", help="Show agent status")
+    agent_v2_status.add_argument("--base-dir", default="out/agent")
+    agent_v2_status.set_defaults(func=cmd_agent_status)
+    agent_v2_activate = agent_v2_sub.add_parser("activate", help="Activate a bundle")
+    agent_v2_activate.add_argument("bundle_dir", help="Bundle directory to activate")
+    agent_v2_activate.add_argument("--bundle-id", default="")
+    agent_v2_activate.add_argument("--app-name", default="default")
+    agent_v2_activate.add_argument("--version", default="latest")
+    agent_v2_activate.add_argument("--base-dir", default="out/agent")
+    agent_v2_activate.add_argument("--apps-dir", default="/opt/waveos/apps")
+    agent_v2_activate.set_defaults(func=cmd_agent_activate)
+    agent_v2_rollback = agent_v2_sub.add_parser("rollback", help="Rollback to previous version")
+    agent_v2_rollback.add_argument("--base-dir", default="out/agent")
+    agent_v2_rollback.add_argument("--app-name", default="default")
+    agent_v2_rollback.set_defaults(func=cmd_agent_rollback)
+    agent_v2_logs = agent_v2_sub.add_parser("logs", help="Show agent logs")
+    agent_v2_logs.add_argument("--base-dir", default="out/agent")
+    agent_v2_logs.add_argument("--limit", type=int, default=50)
+    agent_v2_logs.set_defaults(func=cmd_agent_logs)
+    agent_v2_update = agent_v2_sub.add_parser("update", help="Pull latest from registry and activate")
+    agent_v2_update.add_argument("--channel", default="prod", help="Registry channel")
+    agent_v2_update.add_argument("--registry", default="out/registry", help="Registry root")
+    agent_v2_update.add_argument("--base-dir", default="out/agent")
+    agent_v2_update.set_defaults(func=cmd_agent_update)
+
+    compat_parser = sub.add_parser("compat", help="Compatibility checks")
+    compat_sub = compat_parser.add_subparsers(dest="compat_command")
+    compat_check = compat_sub.add_parser("check", help="Run preflight compatibility check on a bundle")
+    compat_check.add_argument("bundle_dir", help="Bundle directory")
+    compat_check.set_defaults(func=cmd_compat_check)
+
+    registry_parser = sub.add_parser("registry", help="Bundle registry management")
+    registry_sub = registry_parser.add_subparsers(dest="registry_command")
+    registry_pub = registry_sub.add_parser("publish", help="Publish bundle to registry")
+    registry_pub.add_argument("bundle_dir", help="Bundle directory")
+    registry_pub.add_argument("--channel", default="dev", help="Channel (dev/staging/prod/mission-critical)")
+    registry_pub.add_argument("--registry", default="out/registry", help="Registry root path")
+    registry_pub.set_defaults(func=cmd_registry_publish)
+    registry_list = registry_sub.add_parser("list", help="List bundles in registry")
+    registry_list.add_argument("--channel", help="Filter by channel")
+    registry_list.add_argument("--registry", default="out/registry")
+    registry_list.set_defaults(func=cmd_registry_list)
+    registry_get = registry_sub.add_parser("get", help="Get bundle from registry")
+    registry_get.add_argument("bundle_id", help="Bundle ID")
+    registry_get.add_argument("--registry", default="out/registry")
+    registry_get.set_defaults(func=cmd_registry_get)
+
+    registry_serve_parser = sub.add_parser("registry-serve", help="Start registry HTTP server with optional mTLS")
+    registry_serve_parser.add_argument("--host", default="0.0.0.0")
+    registry_serve_parser.add_argument("--port", type=int, default=9200)
+    registry_serve_parser.add_argument("--registry", default="out/registry")
+    registry_serve_parser.add_argument("--cert", help="TLS cert path")
+    registry_serve_parser.add_argument("--key", help="TLS key path")
+    registry_serve_parser.add_argument("--ca", help="CA cert for client verification")
+    registry_serve_parser.add_argument("--mtls", action="store_true", help="Require client certs")
+    registry_serve_parser.set_defaults(func=cmd_registry_serve)
+
+    transfer_parser = sub.add_parser("transfer", help="Run a controlled-transfer gateway job")
+    transfer_parser.add_argument("source", help="Source bundle path")
+    transfer_parser.add_argument("--dest-registry", default="out/mirror")
+    transfer_parser.add_argument("--channel", default="prod")
+    transfer_parser.add_argument("--bundle-id", default="")
+    transfer_parser.add_argument("--staging-dir", default="/tmp/waveos_staging")
+    transfer_parser.set_defaults(func=cmd_transfer_gateway)
+
+    crypto_parser = sub.add_parser("crypto", help="Cryptographic key and signing operations")
+    crypto_sub = crypto_parser.add_subparsers(dest="crypto_command")
+    crypto_keygen = crypto_sub.add_parser("keygen", help="Generate signing key pair")
+    crypto_keygen.add_argument("--key-id", default="")
+    crypto_keygen.add_argument("--algorithm", default="hmac-sha256", choices=["hmac-sha256", "ed25519"])
+    crypto_keygen.add_argument("--out", default="")
+    crypto_keygen.set_defaults(func=cmd_crypto_keygen)
+    crypto_sign = crypto_sub.add_parser("sign", help="Sign a bundle")
+    crypto_sign.add_argument("--dir", required=True)
+    crypto_sign.add_argument("--key-file", required=True)
+    crypto_sign.set_defaults(func=cmd_crypto_sign)
+    crypto_verify = crypto_sub.add_parser("verify", help="Verify bundle signature")
+    crypto_verify.add_argument("--dir", required=True)
+    crypto_verify.add_argument("--key-file", help="Public key file")
+    crypto_verify.set_defaults(func=cmd_crypto_verify)
+
+    governance_parser = sub.add_parser("governance", help="Governance: promotion, audit, separation of duties")
+    governance_sub = governance_parser.add_subparsers(dest="governance_command")
+    gov_promote = governance_sub.add_parser("promote", help="Evaluate promotion request")
+    gov_promote.add_argument("bundle_id")
+    gov_promote.add_argument("--from-channel", required=True)
+    gov_promote.add_argument("--to-channel", required=True)
+    gov_promote.add_argument("--requester", default="cli")
+    gov_promote.add_argument("--approvers", default="", help="Comma-separated approver IDs")
+    gov_promote.add_argument("--builder", default="")
+    gov_promote.add_argument("--has-signature", action="store_true")
+    gov_promote.add_argument("--has-attestation", action="store_true")
+    gov_promote.add_argument("--has-sbom", action="store_true")
+    gov_promote.add_argument("--health-score", type=float, default=100.0)
+    gov_promote.add_argument("--is-ci", action="store_true")
+    gov_promote.set_defaults(func=cmd_governance_promote)
+
+    fleet_parser = sub.add_parser("fleet", help="Fleet reconciliation and management")
+    fleet_sub = fleet_parser.add_subparsers(dest="fleet_command")
+    fleet_reconcile = fleet_sub.add_parser("reconcile", help="Reconcile fleet to desired state")
+    fleet_reconcile.add_argument("--desired", required=True, help="Desired state JSON")
+    fleet_reconcile.add_argument("--current", help="Current state JSON")
+    fleet_reconcile.set_defaults(func=cmd_fleet_reconcile)
+
+    dashboard_parser = sub.add_parser("dashboard", help="Start operator dashboard")
+    dashboard_parser.add_argument("--host", default="0.0.0.0")
+    dashboard_parser.add_argument("--port", type=int, default=9300)
+    dashboard_parser.add_argument("--registry", default="out/registry")
+    dashboard_parser.set_defaults(func=cmd_dashboard)
+
+    drills_parser = sub.add_parser("drills", help="Failure drills framework")
+    drills_sub = drills_parser.add_subparsers(dest="drills_command")
+    drills_list_parser = drills_sub.add_parser("list", help="List available failure drills")
+    drills_list_parser.set_defaults(func=cmd_drills_list)
+    drills_run_parser = drills_sub.add_parser("run", help="Run a failure drill")
+    drills_run_parser.add_argument("drill_name", help="Drill name")
+    drills_run_parser.set_defaults(func=cmd_drills_run)
+
+    quarantine_parser = sub.add_parser("quarantine", help="Quarantine/ban/release bundles")
+    quarantine_parser.add_argument("quarantine_action", choices=["quarantine", "ban", "release", "status"])
+    quarantine_parser.add_argument("bundle_id")
+    quarantine_parser.add_argument("--reason", default="")
+    quarantine_parser.add_argument("--registry-path", default="out/registry/quarantine.json")
+    quarantine_parser.set_defaults(func=cmd_quarantine)
 
     return parser
 

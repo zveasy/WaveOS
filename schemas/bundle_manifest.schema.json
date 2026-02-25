@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://waveos.io/schemas/bundle_manifest/v2",
+  "title": "WaveOS Bundle Manifest V2",
+  "description": "Schema for WaveOS V2 bundle manifest with targets, payload, runtimes, services, bridge, rollback, and policy fields.",
+  "type": "object",
+  "required": ["bundle_id", "version"],
+  "properties": {
+    "manifest_version": {"type": "string", "enum": ["2.0"], "description": "Manifest format version"},
+    "bundle_id": {"type": "string", "description": "Unique bundle identifier"},
+    "version": {"type": "string", "description": "Bundle version"},
+    "build_commit": {"type": "string", "description": "Git commit SHA"},
+    "build_time": {"type": "string", "format": "date-time", "description": "ISO 8601 build timestamp"},
+    "waveos_version": {"type": "string"},
+    "policy_version": {"type": "string"},
+    "targets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "os": {"type": "string", "description": "Target OS (linux, windows)"},
+          "os_version": {"type": "string", "description": "Minimum OS version"},
+          "arch": {"type": "string", "description": "CPU architecture (x86_64, aarch64)"},
+          "cpu_features": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "payload": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "destination"],
+        "properties": {
+          "source": {"type": "string"},
+          "destination": {"type": "string"},
+          "permissions": {"type": "string", "pattern": "^[0-7]{3,4}$"},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "size_bytes": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    "runtimes": {
+      "type": "object",
+      "properties": {
+        "strategy": {"type": "string", "enum": ["bundled", "side_by_side", "container", "vm"]},
+        "runtime_version": {"type": "string"},
+        "dependencies": {"type": "array", "items": {"type": "string"}},
+        "isolation": {"type": "string", "enum": ["none", "namespace", "container", "vm"]}
+      }
+    },
+    "services": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "command"],
+        "properties": {
+          "name": {"type": "string"},
+          "command": {"type": "string"},
+          "order": {"type": "integer"},
+          "health_check": {"type": "string"},
+          "health_interval_sec": {"type": "integer", "minimum": 1},
+          "restart_policy": {"type": "string", "enum": ["on-failure", "always", "never"]},
+          "depends_on": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "bridge": {
+      "type": ["object", "null"],
+      "properties": {
+        "mode": {"type": "string", "enum": ["mirror", "canary", "cutover"]},
+        "legacy_service": {"type": "string"},
+        "adapter_service": {"type": "string"},
+        "routing_rules": {"type": "object"},
+        "validation_checks": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "rollback": {
+      "type": "object",
+      "properties": {
+        "previous_versions": {"type": "array", "items": {"type": "string"}},
+        "conditions": {"type": "array", "items": {"type": "string"}},
+        "auto_rollback": {"type": "boolean"}
+      }
+    },
+    "policy": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "properties": {
+          "name": {"type": "string"},
+          "type": {"type": "string", "enum": ["health_score", "approval", "check_passed"]},
+          "threshold": {"type": "number"},
+          "required": {"type": "boolean"}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {"type": "string"},
+          "sha256": {"type": "string"},
+          "size_bytes": {"type": "integer"}
+        }
+      }
+    },
+    "checksums": {"type": "object", "additionalProperties": {"type": "string"}},
+    "attestation": {"type": ["object", "null"]},
+    "sbom_ref": {"type": "string"},
+    "channel": {"type": "string", "enum": ["dev", "staging", "prod", "mission-critical"]},
+    "identity": {"type": ["object", "null"]},
+    "environment": {"type": "string"},
+    "feature_flags": {"type": "object"},
+    "encrypted_artifacts": {"type": "boolean"},
+    "metadata": {"type": "object"}
+  }
+}
