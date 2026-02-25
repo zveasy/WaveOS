@@ -1,48 +1,13 @@
 [
   {
-    "action": "REROUTE",
-    "entity_id": "link-2",
+    "action": "QOS_PRIORITIZATION",
+    "entity_id": "link-1",
     "entity_type": "link",
     "parameters": {
-      "priority": "high"
+      "class": "gold"
     },
-    "rationale": "Link health is FAIL; recommend reroute."
-  },
-  {
-    "action": "RATE_LIMIT",
-    "entity_id": "link-2",
-    "entity_type": "link",
-    "parameters": {
-      "limit_pct": 60
-    },
-    "rationale": "Degraded link; reduce load to stabilize."
-  },
-  {
-    "action": "REROUTE",
-    "entity_id": "link-3",
-    "entity_type": "link",
-    "parameters": {
-      "priority": "high"
-    },
-    "rationale": "Link health is FAIL; recommend reroute."
-  },
-  {
-    "action": "RATE_LIMIT",
-    "entity_id": "link-3",
-    "entity_type": "link",
-    "parameters": {
-      "limit_pct": 60
-    },
-    "rationale": "Degraded link; reduce load to stabilize."
-  },
-  {
-    "action": "POWER_THERMAL_CONSTRAINT",
-    "entity_id": "link-3",
-    "entity_type": "link",
-    "parameters": {
-      "max_temp_c": 75
-    },
-    "rationale": "Temperature drift detected; apply thermal constraints."
+    "rationale": "Moderate drift detected; prioritize critical traffic.",
+    "rule_id": "health_warn_qos"
   },
   {
     "action": "REROUTE",
@@ -51,7 +16,8 @@
     "parameters": {
       "priority": "high"
     },
-    "rationale": "Link health is FAIL; recommend reroute."
+    "rationale": "Link health is FAIL; recommend reroute.",
+    "rule_id": "health_fail_reroute"
   },
   {
     "action": "RATE_LIMIT",
@@ -60,6 +26,7 @@
     "parameters": {
       "limit_pct": 60
     },
-    "rationale": "Degraded link; reduce load to stabilize."
+    "rationale": "Degraded link; reduce load to stabilize.",
+    "rule_id": "health_fail_rate_limit"
   }
 ]

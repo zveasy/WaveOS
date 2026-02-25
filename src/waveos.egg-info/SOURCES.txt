@@ -2,9 +2,12 @@ LICENSE
 README.md
 pyproject.toml
 src/waveos/__init__.py
+src/waveos/__main__.py
 src/waveos/action_lifecycle.py
 src/waveos/action_signing.py
+src/waveos/attestation.py
 src/waveos/bundle.py
+src/waveos/bundle_v2.py
 src/waveos/change_log.py
 src/waveos/cli.py
 src/waveos/compliance.py
@@ -15,6 +18,7 @@ src/waveos/licensing.py
 src/waveos/node_health.py
 src/waveos/quotas.py
 src/waveos/recovery.py
+src/waveos/sbom.py
 src/waveos/scheduler.py
 src/waveos/schema_registry.py
 src/waveos/security.py
@@ -41,6 +45,11 @@ src/waveos/actuators/adapters/base.py
 src/waveos/actuators/adapters/modbus_inverter.py
 src/waveos/actuators/adapters/ocpp_charger.py
 src/waveos/actuators/adapters/sdn_rest.py
+src/waveos/agent/__init__.py
+src/waveos/agent/evidence.py
+src/waveos/agent/manager.py
+src/waveos/agent/service_runner.py
+src/waveos/agent/state_machine.py
 src/waveos/collectors/__init__.py
 src/waveos/collectors/auth.py
 src/waveos/collectors/file.py

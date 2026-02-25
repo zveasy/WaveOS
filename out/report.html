@@ -71,30 +71,30 @@
           
           <tr>
             <td>link / link-1</td>
-            <td><span class="badge PASS">PASS</span></td>
+            <td><span class="badge HealthStatus.WARN">HealthStatus.WARN</span></td>
+            <td>65.0</td>
+            <td>tx_power_dbm_spike</td>
+          </tr>
+          
+          <tr>
+            <td>link / link-2</td>
+            <td><span class="badge HealthStatus.PASS">HealthStatus.PASS</span></td>
             <td>100.0</td>
             <td></td>
           </tr>
           
           <tr>
-            <td>link / link-2</td>
-            <td><span class="badge FAIL">FAIL</span></td>
-            <td>50.0</td>
-            <td>errors_spike, drops_increase</td>
-          </tr>
-          
-          <tr>
             <td>link / link-3</td>
-            <td><span class="badge FAIL">FAIL</span></td>
-            <td>45.0</td>
-            <td>temperature_drift, tx_power_dbm_increase</td>
+            <td><span class="badge HealthStatus.PASS">HealthStatus.PASS</span></td>
+            <td>100.0</td>
+            <td></td>
           </tr>
           
           <tr>
             <td>link / link-4</td>
-            <td><span class="badge FAIL">FAIL</span></td>
-            <td>50.0</td>
-            <td>retries_increase, congestion_pct_spike</td>
+            <td><span class="badge HealthStatus.FAIL">HealthStatus.FAIL</span></td>
+            <td>0.0</td>
+            <td>drops_increase, tx_power_dbm_increase, overcurrent, charger_fault</td>
           </tr>
           
         </tbody>
@@ -119,42 +119,42 @@
           
           <tr>
             <td>link / link-1</td>
-            <td><span class="badge PASS">PASS</span></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
+            <td><span class="badge HealthStatus.WARN">HealthStatus.WARN</span></td>
+            <td>108.69486766858265</td>
+            <td>159.07330674966988</td>
+            <td>683.3004851004533</td>
+            <td>22.224787563724878</td>
+            <td>0.0</td>
           </tr>
           
           <tr>
             <td>link / link-2</td>
-            <td><span class="badge FAIL">FAIL</span></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
+            <td><span class="badge HealthStatus.PASS">HealthStatus.PASS</span></td>
+            <td>75.3445180919295</td>
+            <td>139.84180925677057</td>
+            <td>538.7839194327463</td>
+            <td>80.85102245550547</td>
+            <td>0.0</td>
           </tr>
           
           <tr>
             <td>link / link-3</td>
-            <td><span class="badge FAIL">FAIL</span></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
+            <td><span class="badge HealthStatus.PASS">HealthStatus.PASS</span></td>
+            <td>27.164231628824098</td>
+            <td>69.3432753666929</td>
+            <td>391.7356295210666</td>
+            <td>62.260822195682444</td>
+            <td>0.0</td>
           </tr>
           
           <tr>
             <td>link / link-4</td>
-            <td><span class="badge FAIL">FAIL</span></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
-            <td></td>
+            <td><span class="badge HealthStatus.FAIL">HealthStatus.FAIL</span></td>
+            <td>91.5560491033914</td>
+            <td>220.18860942011125</td>
+            <td>748.4532865715645</td>
+            <td>24.868860417661843</td>
+            <td>1.0</td>
           </tr>
           
         </tbody>
@@ -174,43 +174,19 @@
         <tbody>
           
           <tr>
-            <td>REROUTE</td>
-            <td>link / link-2</td>
-            <td>Link health is FAIL; recommend reroute.</td>
+            <td>ActionType.QOS_PRIORITIZATION</td>
+            <td>link / link-1</td>
+            <td>Moderate drift detected; prioritize critical traffic.</td>
           </tr>
           
           <tr>
-            <td>RATE_LIMIT</td>
-            <td>link / link-2</td>
-            <td>Degraded link; reduce load to stabilize.</td>
-          </tr>
-          
-          <tr>
-            <td>REROUTE</td>
-            <td>link / link-3</td>
-            <td>Link health is FAIL; recommend reroute.</td>
-          </tr>
-          
-          <tr>
-            <td>RATE_LIMIT</td>
-            <td>link / link-3</td>
-            <td>Degraded link; reduce load to stabilize.</td>
-          </tr>
-          
-          <tr>
-            <td>POWER_THERMAL_CONSTRAINT</td>
-            <td>link / link-3</td>
-            <td>Temperature drift detected; apply thermal constraints.</td>
-          </tr>
-          
-          <tr>
-            <td>REROUTE</td>
+            <td>ActionType.REROUTE</td>
             <td>link / link-4</td>
             <td>Link health is FAIL; recommend reroute.</td>
           </tr>
           
           <tr>
-            <td>RATE_LIMIT</td>
+            <td>ActionType.RATE_LIMIT</td>
             <td>link / link-4</td>
             <td>Degraded link; reduce load to stabilize.</td>
           </tr>
@@ -231,9 +207,11 @@
         Explainability details are available in <strong>explainability.json</strong>.
       </p>
       <p>
-        This report corresponds to run ID <strong></strong>.
+        This report corresponds to run ID <strong>run-4be8fdfe</strong>.
       </p>
     </section>
+
+    
 
     <section class="section">
       <h2>Events</h2>
@@ -248,21 +226,33 @@
         <tbody>
           
           <tr>
-            <td>2026-01-26 16:40:56.267786+00:00</td>
-            <td>ERROR</td>
-            <td>link link-2 HealthStatus.FAIL drivers=errors_spike,drops_increase</td>
+            <td>2026-02-25 00:03:27.879698+00:00</td>
+            <td>EventLevel.WARN</td>
+            <td>link link-1 HealthStatus.WARN drivers=tx_power_dbm_spike</td>
           </tr>
           
           <tr>
-            <td>2026-01-26 16:40:56.267786+00:00</td>
-            <td>ERROR</td>
-            <td>link link-3 HealthStatus.FAIL drivers=temperature_drift,tx_power_dbm_increase</td>
+            <td>2026-02-25 00:03:27.879698+00:00</td>
+            <td>EventLevel.ERROR</td>
+            <td>link link-4 HealthStatus.FAIL drivers=drops_increase,tx_power_dbm_increase,overcurrent,charger_fault</td>
           </tr>
           
           <tr>
-            <td>2026-01-26 16:40:56.267786+00:00</td>
-            <td>ERROR</td>
-            <td>link link-4 HealthStatus.FAIL drivers=retries_increase,congestion_pct_spike</td>
+            <td>2026-02-25 00:03:28.361203+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.QOS_PRIORITIZATION entity=link:link-1</td>
+          </tr>
+          
+          <tr>
+            <td>2026-02-25 00:03:28.361211+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.REROUTE entity=link:link-4</td>
+          </tr>
+          
+          <tr>
+            <td>2026-02-25 00:03:28.361214+00:00</td>
+            <td>EventLevel.INFO</td>
+            <td>action=ActionType.RATE_LIMIT entity=link:link-4</td>
           </tr>
           
         </tbody>
