@@ -18,6 +18,7 @@ src/waveos/licensing.py
 src/waveos/node_health.py
 src/waveos/quotas.py
 src/waveos/recovery.py
+src/waveos/rollout_controls.py
 src/waveos/sbom.py
 src/waveos/scheduler.py
 src/waveos/schema_registry.py
@@ -50,11 +51,17 @@ src/waveos/agent/evidence.py
 src/waveos/agent/manager.py
 src/waveos/agent/service_runner.py
 src/waveos/agent/state_machine.py
+src/waveos/bridge/__init__.py
+src/waveos/bridge/orchestrator.py
+src/waveos/bridge/patterns.py
 src/waveos/collectors/__init__.py
 src/waveos/collectors/auth.py
 src/waveos/collectors/file.py
 src/waveos/collectors/http.py
 src/waveos/collectors/mqtt.py
+src/waveos/compat/__init__.py
+src/waveos/compat/preflight.py
+src/waveos/compat/strategies.py
 src/waveos/compatibility/__init__.py
 src/waveos/compatibility/translator.py
 src/waveos/coordinator/__init__.py
@@ -82,6 +89,8 @@ src/waveos/policy/engine.py
 src/waveos/policy/gates.py
 src/waveos/policy/schema.py
 src/waveos/policy/templates.py
+src/waveos/registry/__init__.py
+src/waveos/registry/store.py
 src/waveos/reporting/__init__.py
 src/waveos/reporting/report.py
 src/waveos/runbooks/__init__.py
