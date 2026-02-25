@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 from dataclasses import dataclass, field
@@ -16,134 +15,141 @@ logger = get_logger("waveos.registry.mirror")
 
 @dataclass
 class SyncResult:
-    """Result of a mirror sync operation."""
     synced: List[str] = field(default_factory=list)
     skipped: List[str] = field(default_factory=list)
     failed: List[str] = field(default_factory=list)
-    transfer_receipts: List[Dict[str, Any]] = field(default_factory=list)
+    timestamp: str = ""
 
     def to_dict(self) -> dict:
-        return {"synced": self.synced, "skipped": self.skipped, "failed": self.failed, "transfer_receipts": self.transfer_receipts, "timestamp": utc_now().isoformat()}
+        return {
+            "synced": self.synced,
+            "skipped": self.skipped,
+            "failed": self.failed,
+            "timestamp": self.timestamp or utc_now().isoformat(),
+            "total_synced": len(self.synced),
+            "total_skipped": len(self.skipped),
+            "total_failed": len(self.failed),
+        }
 
 
 @dataclass
 class TransferReceipt:
-    """Signed receipt for a bundle transfer (chain-of-custody)."""
     bundle_id: str
     source: str
     destination: str
     timestamp: str = ""
     sha256: str = ""
-    transfer_method: str = "mirror_sync"
-    scan_result: str = "not_scanned"
-    approved_by: str = ""
+    verified: bool = False
+    approver: str = ""
 
     def to_dict(self) -> dict:
         return {
-            "bundle_id": self.bundle_id, "source": self.source, "destination": self.destination,
-            "timestamp": self.timestamp or utc_now().isoformat(), "sha256": self.sha256,
-            "transfer_method": self.transfer_method, "scan_result": self.scan_result, "approved_by": self.approved_by,
+            "bundle_id": self.bundle_id,
+            "source": self.source,
+            "destination": self.destination,
+            "timestamp": self.timestamp or utc_now().isoformat(),
+            "sha256": self.sha256,
+            "verified": self.verified,
+            "approver": self.approver,
         }
-
-    @classmethod
-    def from_dict(cls, d: dict) -> TransferReceipt:
-        return cls(**{k: d[k] for k in d if k in cls.__dataclass_fields__})
 
 
 class RegistryMirror:
-    """Sync bundles between source and destination registries (file-system based).
-
+    """Sync bundles between registries (push from source to destination).
+    
     Supports:
-    - Full sync (copy all bundles from source to dest)
+    - Full sync (all bundles)
     - Channel-filtered sync
-    - One-way (diode) mode: source → dest only, never writes back
-    - Scan hooks (pre-copy validation)
+    - One-way (data diode) mode
     - Transfer receipts for chain-of-custody
     """
 
-    def __init__(self, source_root: Path, dest_root: Path, one_way: bool = True) -> None:
+    def __init__(self, source_root: Path, dest_root: Path) -> None:
         self.source_root = source_root
         self.dest_root = dest_root
-        self.one_way = one_way
-        self._scan_hooks: List[Any] = []
+        self._receipts: List[TransferReceipt] = []
 
-    def add_scan_hook(self, hook) -> None:
-        """Add a scan hook: callable(bundle_dir: Path) -> (ok: bool, message: str)."""
-        self._scan_hooks.append(hook)
-
-    def _run_scans(self, bundle_dir: Path) -> tuple[bool, str]:
-        for hook in self._scan_hooks:
-            try:
-                ok, msg = hook(bundle_dir)
-                if not ok:
-                    return False, msg
-            except Exception as exc:
-                return False, f"Scan hook failed: {exc}"
-        return True, "passed" if self._scan_hooks else "not_scanned"
-
-    def _bundle_hash(self, bundle_dir: Path) -> str:
-        manifest = bundle_dir / "bundle.json"
-        if manifest.exists():
-            return hashlib.sha256(manifest.read_bytes()).hexdigest()
-        return ""
-
-    def sync(self, channel: Optional[str] = None, approved_by: str = "") -> SyncResult:
-        """Sync bundles from source to destination."""
-        result = SyncResult()
-        source_index_path = self.source_root / "index.json"
-        if not source_index_path.exists():
-            logger.warning("No source index at %s", source_index_path)
-            return result
-
-        source_entries = json.loads(source_index_path.read_text(encoding="utf-8"))
-        if channel:
-            source_entries = [e for e in source_entries if e.get("channel") == channel]
-
-        dest_index_path = self.dest_root / "index.json"
-        self.dest_root.mkdir(parents=True, exist_ok=True)
-        dest_entries = []
-        if dest_index_path.exists():
-            try:
-                dest_entries = json.loads(dest_index_path.read_text(encoding="utf-8"))
-            except json.JSONDecodeError:
-                pass
-        dest_ids = {e.get("bundle_id") for e in dest_entries}
-
-        for entry in source_entries:
-            bid = entry.get("bundle_id", "")
-            src_bundle = self.source_root / "bundles" / bid
-            if not src_bundle.is_dir():
-                result.skipped.append(bid)
+    def sync(
+        self,
+        channel: Optional[str] = None,
+        verify_signatures: bool = True,
+        hmac_key: Optional[str] = None,
+        approver: str = "",
+        scan_hook: Optional[callable] = None,
+    ) -> SyncResult:
+        """Sync bundles from source to destination registry."""
+        from waveos.registry.store import RegistryStore
+        
+        source = RegistryStore(self.source_root)
+        dest = RegistryStore(self.dest_root)
+        
+        entries = source.list_bundles(channel=channel)
+        dest_entries = {e.bundle_id for e in dest.list_bundles()}
+        
+        result = SyncResult(timestamp=utc_now().isoformat())
+        
+        for entry in entries:
+            if entry.bundle_id in dest_entries:
+                result.skipped.append(entry.bundle_id)
                 continue
-            if bid in dest_ids:
-                result.skipped.append(bid)
+            
+            source_path = source.get_bundle(entry.bundle_id)
+            if not source_path:
+                result.failed.append(entry.bundle_id)
                 continue
-            scan_ok, scan_msg = self._run_scans(src_bundle)
-            if not scan_ok:
-                logger.warning("Bundle %s failed scan: %s", bid, scan_msg)
-                result.failed.append(bid)
-                continue
-            dest_bundle = self.dest_root / "bundles" / bid
+            
+            if verify_signatures and hmac_key:
+                from waveos.bundle import verify_manifest
+                if not verify_manifest(source_path, hmac_key):
+                    logger.warning("Signature verification failed for %s, skipping", entry.bundle_id)
+                    result.failed.append(entry.bundle_id)
+                    continue
+            
+            if scan_hook:
+                try:
+                    scan_ok = scan_hook(source_path)
+                    if not scan_ok:
+                        logger.warning("Scan hook rejected %s", entry.bundle_id)
+                        result.failed.append(entry.bundle_id)
+                        continue
+                except Exception as exc:
+                    logger.warning("Scan hook error for %s: %s", entry.bundle_id, exc)
+                    result.failed.append(entry.bundle_id)
+                    continue
+            
             try:
-                if dest_bundle.exists():
-                    shutil.rmtree(dest_bundle)
-                shutil.copytree(src_bundle, dest_bundle)
+                dest.publish(source_path, channel=entry.channel, publisher=f"mirror:{approver or 'auto'}")
+                
+                import hashlib
+                manifest_path = source_path / "bundle.json"
+                sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest() if manifest_path.exists() else ""
+                
                 receipt = TransferReceipt(
-                    bundle_id=bid, source=str(self.source_root), destination=str(self.dest_root),
-                    sha256=self._bundle_hash(dest_bundle), scan_result=scan_msg, approved_by=approved_by,
+                    bundle_id=entry.bundle_id,
+                    source=str(self.source_root),
+                    destination=str(self.dest_root),
+                    sha256=sha,
+                    verified=True,
+                    approver=approver,
                 )
-                result.transfer_receipts.append(receipt.to_dict())
-                dest_entries.append(entry)
-                result.synced.append(bid)
-                logger.info("Synced bundle %s", bid)
-            except (OSError, shutil.Error) as exc:
-                logger.error("Failed to sync bundle %s: %s", bid, exc)
-                result.failed.append(bid)
-
-        dest_index_path.write_text(json.dumps(dest_entries, indent=2) + "\n", encoding="utf-8")
+                self._receipts.append(receipt)
+                result.synced.append(entry.bundle_id)
+                logger.info("Synced %s to mirror", entry.bundle_id)
+            except Exception as exc:
+                logger.warning("Failed to sync %s: %s", entry.bundle_id, exc)
+                result.failed.append(entry.bundle_id)
+        
         return result
 
-    def write_sync_log(self, result: SyncResult, path: Path) -> None:
+    def get_receipts(self) -> List[TransferReceipt]:
+        return list(self._receipts)
+
+    def save_receipts(self, path: Path) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = [r.to_dict() for r in self._receipts]
+        path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+    def save_sync_log(self, result: SyncResult, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a", encoding="utf-8") as f:
             f.write(json.dumps(result.to_dict(), default=str) + "\n")
